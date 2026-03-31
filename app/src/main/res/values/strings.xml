@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Bluetooth MANET Demo</string>
+    <string name="subtitle">Discover nearby phones, accept RFCOMM connections, and relay messages with TTL-based forwarding.</string>
+    <string name="node_id_hint">This phone's node ID (example: A)</string>
+    <string name="enable_bluetooth">Enable Bluetooth</string>
+    <string name="make_discoverable">Make Discoverable</string>
+    <string name="discover_peers">Discover Nearby Peers</string>
+    <string name="start_listening">Start Listening</string>
+    <string name="discovered_peers">Discovered / Paired Peers</string>
+    <string name="active_connections">Active RFCOMM Connections</string>
+    <string name="no_connections">No active connections yet.</string>
+    <string name="destination_hint">Destination node ID (example: C)</string>
+    <string name="message_hint">Message body</string>
+    <string name="send_message">Send Message</string>
+    <string name="event_log">Event Log</string>
+</resources>
