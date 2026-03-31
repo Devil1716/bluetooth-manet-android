@@ -126,21 +126,25 @@ public class BluetoothMeshManager {
         });
     }
 
-    public void sendNewMessage(String destination, String body) {
+    public boolean sendNewMessage(String destination, String body) {
         String trimmedBody = body == null ? "" : body.trim();
         String trimmedDestination = destination == null ? "" : destination.trim().toUpperCase();
         if (trimmedBody.isEmpty() || trimmedDestination.isEmpty()) {
             listener.onLog("Destination and message are required.");
-            return;
+            return false;
         }
 
         ManetMessage message = ManetMessage.outbound(myNodeId, trimmedDestination, trimmedBody, ManetMessage.DEFAULT_TTL);
         seenMessages.add(message.getId());
         if (trimmedDestination.equals(myNodeId)) {
             listener.onMessageDelivered(message);
-            return;
+            return true;
         }
-        forwardMessage(message, null);
+        if (sockets.isEmpty()) {
+            listener.onLog("No active peers. Connect to a device before sending.");
+            return false;
+        }
+        return forwardMessage(message, null) > 0;
     }
 
     private void registerSocket(BluetoothSocket socket, String label) {
@@ -200,7 +204,7 @@ public class BluetoothMeshManager {
         }
     }
 
-    private void forwardMessage(ManetMessage message, String exceptAddress) {
+    private int forwardMessage(ManetMessage message, String exceptAddress) {
         int forwarded = 0;
         for (String address : sockets.keySet()) {
             if (address.equals(exceptAddress)) {
@@ -223,6 +227,7 @@ public class BluetoothMeshManager {
         }
 
         listener.onLog("Forwarded " + message.getId() + " to " + forwarded + " peer(s).");
+        return forwarded;
     }
 
     private void publishConnections() {

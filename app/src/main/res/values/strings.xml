@@ -6,7 +6,7 @@
     <string name="make_discoverable">Make Discoverable</string>
     <string name="discover_peers">Discover Nearby Peers</string>
     <string name="start_listening">Start Listening</string>
-    <string name="update_from_github">Update From GitHub</string>
+    <string name="update_from_github">Download Latest APK</string>
     <string name="discovered_peers">Discovered / Paired Peers</string>
     <string name="active_connections">Active RFCOMM Connections</string>
     <string name="no_connections">No active connections yet.</string>

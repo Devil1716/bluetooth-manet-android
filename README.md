@@ -16,7 +16,7 @@ Android Studio project for a simple Bluetooth-based MANET proof of concept in Ja
 - Language: Java
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.0.6`
+- Current release: `v1.0.7`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run

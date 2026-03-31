@@ -2,6 +2,7 @@ package com.devil1716.bluetoothmanet;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.DownloadManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
@@ -168,7 +169,13 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         updateButton.setOnClickListener(v -> openGithubUpdate());
         sendButton.setOnClickListener(v -> {
             meshManager.setMyNodeId(nodeIdInput.getText().toString());
-            meshManager.sendNewMessage(destinationInput.getText().toString(), messageInput.getText().toString());
+            boolean sent = meshManager.sendNewMessage(destinationInput.getText().toString(), messageInput.getText().toString());
+            if (sent) {
+                Toast.makeText(this, "Message sent into the mesh.", Toast.LENGTH_SHORT).show();
+                messageInput.setText("");
+            } else {
+                Toast.makeText(this, "Message was not sent. Check the event log.", Toast.LENGTH_SHORT).show();
+            }
         });
     }
 
@@ -220,9 +227,25 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     }
 
     private void openGithubUpdate() {
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(LATEST_APK_URL));
-        startActivity(intent);
-        appendLog("Opening latest GitHub APK...");
+        try {
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(LATEST_APK_URL))
+                    .setTitle("Bluetooth MANET Demo update")
+                    .setDescription("Downloading the latest APK from GitHub")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setMimeType("application/vnd.android.package-archive")
+                    .setAllowedOverMetered(true)
+                    .setAllowedOverRoaming(true);
+
+            DownloadManager downloadManager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            downloadManager.enqueue(request);
+            appendLog("Downloading latest GitHub APK...");
+            Toast.makeText(this, "Download started. Open the notification when it finishes.", Toast.LENGTH_LONG).show();
+        } catch (Exception exception) {
+            appendLog("Download failed to start. Opening GitHub release page instead.");
+            Intent intent = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/Devil1716/bluetooth-manet-android/releases/latest"));
+            startActivity(intent);
+        }
     }
 
     @SuppressLint("MissingPermission")
