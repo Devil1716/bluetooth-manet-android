@@ -152,6 +152,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         messageInput = findViewById(R.id.messageInput);
         logView.setMovementMethod(new ScrollingMovementMethod());
         inboxView.setMovementMethod(new ScrollingMovementMethod());
+        syncNodeId();
 
         Spinner peerSpinner = findViewById(R.id.peerSpinner);
         peerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
@@ -183,7 +184,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         listenButton.setOnClickListener(v -> startListening());
         updateButton.setOnClickListener(v -> openGithubUpdate());
         sendButton.setOnClickListener(v -> {
-            meshManager.setMyNodeId(nodeIdInput.getText().toString());
+            syncNodeId();
             boolean sent = meshManager.sendNewMessage(destinationInput.getText().toString(), messageInput.getText().toString());
             if (sent) {
                 Toast.makeText(this, "Message sent into the mesh.", Toast.LENGTH_SHORT).show();
@@ -302,6 +303,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         if (adapter == null) {
             return;
         }
+        syncNodeId();
         if (!adapter.isEnabled()) {
             pendingDiscovery = true;
             ensureBluetoothEnabledForAction();
@@ -327,6 +329,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         if (adapter == null) {
             return;
         }
+        syncNodeId();
         if (!adapter.isEnabled()) {
             pendingListening = true;
             ensureBluetoothEnabledForAction();
@@ -376,6 +379,10 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
 
     private void appendLog(String message) {
         runOnUiThread(() -> logView.append(message + "\n"));
+    }
+
+    private void syncNodeId() {
+        meshManager.setMyNodeId(nodeIdInput.getText().toString());
     }
 
     private void resumePendingActions() {
