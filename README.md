@@ -46,3 +46,7 @@ Android Studio project for a simple Bluetooth-based MANET proof of concept in Ja
 - Phones usually need to be paired first for reliable RFCOMM sockets.
 - This is a demo routing layer, not a production mesh protocol.
 - The current environment could not build an APK because Java / Gradle / Android SDK were not installed locally.
+
+## Windows laptop node
+
+If you want the Windows laptop to join the same MANET, use the Python CLI in [windows-node](./windows-node).
