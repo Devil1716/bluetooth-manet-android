@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">Bluetooth MANET Demo</string>
     <string name="subtitle">Discover nearby phones, accept RFCOMM connections, and relay messages with TTL-based forwarding.</string>
-    <string name="node_id_hint">This phone's node ID (example: A)</string>
+    <string name="node_id_hint">This phone\'s node ID (example: A)</string>
     <string name="enable_bluetooth">Enable Bluetooth</string>
     <string name="make_discoverable">Make Discoverable</string>
     <string name="discover_peers">Discover Nearby Peers</string>
