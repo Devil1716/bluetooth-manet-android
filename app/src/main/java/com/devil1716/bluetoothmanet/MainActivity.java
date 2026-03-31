@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.method.ScrollingMovementMethod;
@@ -32,6 +33,9 @@ import java.util.Map;
 import java.util.Set;
 
 public class MainActivity extends AppCompatActivity implements BluetoothMeshManager.Listener {
+    private static final String LATEST_APK_URL =
+            "https://github.com/Devil1716/bluetooth-manet-android/releases/latest/download/app-debug.apk";
+
     private final Map<String, PeerDevice> discoveredPeers = new LinkedHashMap<>();
 
     private BluetoothMeshManager meshManager;
@@ -154,12 +158,14 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         Button discoverableButton = findViewById(R.id.makeDiscoverableButton);
         Button discoverButton = findViewById(R.id.discoverPeersButton);
         Button listenButton = findViewById(R.id.startListeningButton);
+        Button updateButton = findViewById(R.id.updateFromGithubButton);
         Button sendButton = findViewById(R.id.sendButton);
 
         enableButton.setOnClickListener(v -> ensureBluetoothEnabled());
         discoverableButton.setOnClickListener(v -> requestDiscoverableMode());
         discoverButton.setOnClickListener(v -> startDiscovery());
         listenButton.setOnClickListener(v -> startListening());
+        updateButton.setOnClickListener(v -> openGithubUpdate());
         sendButton.setOnClickListener(v -> {
             meshManager.setMyNodeId(nodeIdInput.getText().toString());
             meshManager.sendNewMessage(destinationInput.getText().toString(), messageInput.getText().toString());
@@ -211,6 +217,12 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
         discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300);
         discoverableLauncher.launch(discoverableIntent);
+    }
+
+    private void openGithubUpdate() {
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(LATEST_APK_URL));
+        startActivity(intent);
+        appendLog("Opening latest GitHub APK...");
     }
 
     @SuppressLint("MissingPermission")

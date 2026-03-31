@@ -3,6 +3,7 @@ import asyncio
 import sys
 import uuid
 from dataclasses import dataclass
+from typing import Optional
 
 from winrt.windows.devices.bluetooth import BluetoothDevice
 from winrt.windows.devices.bluetooth.rfcomm import (
@@ -94,8 +95,10 @@ class WindowsManetNode:
         self.listener: StreamSocketListener | None = None
         self.provider: RfcommServiceProvider | None = None
         self.reader_tasks: set[asyncio.Task] = set()
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def start_listener(self) -> None:
+        self.loop = asyncio.get_running_loop()
         self.provider = await RfcommServiceProvider.create_async(SERVICE_ID)
         self.listener = StreamSocketListener()
         self.listener.add_connection_received(self._on_connection_received)
@@ -234,7 +237,19 @@ class WindowsManetNode:
 
     def _on_connection_received(self, _sender, args) -> None:
         label = f"incoming-{len(self.connections) + 1}"
-        asyncio.get_running_loop().create_task(self._register_connection(label, args.socket))
+        if self.loop is None:
+            print("[peer] no event loop available for incoming connection")
+            try:
+                args.socket.close()
+            except Exception:
+                pass
+            return
+        self.loop.call_soon_threadsafe(self._schedule_incoming_connection, label, args.socket)
+
+    def _schedule_incoming_connection(self, label: str, socket: StreamSocket) -> None:
+        task = self.loop.create_task(self._register_connection(label, socket))
+        self.reader_tasks.add(task)
+        task.add_done_callback(self.reader_tasks.discard)
 
 
 async def command_loop(node: WindowsManetNode) -> None:
