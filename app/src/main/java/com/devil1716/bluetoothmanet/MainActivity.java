@@ -2,7 +2,6 @@ package com.devil1716.bluetoothmanet;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
-import android.app.DownloadManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
@@ -26,6 +25,13 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,8 +40,10 @@ import java.util.Map;
 import java.util.Set;
 
 public class MainActivity extends AppCompatActivity implements BluetoothMeshManager.Listener {
-    private static final String LATEST_APK_URL =
-            "https://github.com/Devil1716/bluetooth-manet-android/releases/latest/download/app-debug.apk";
+    private static final String LATEST_RELEASE_API =
+            "https://api.github.com/repos/Devil1716/bluetooth-manet-android/releases/latest";
+    private static final String LATEST_RELEASE_PAGE =
+            "https://github.com/Devil1716/bluetooth-manet-android/releases/latest";
 
     private final Map<String, PeerDevice> discoveredPeers = new LinkedHashMap<>();
 
@@ -234,25 +242,58 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     }
 
     private void openGithubUpdate() {
-        try {
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(LATEST_APK_URL))
-                    .setTitle("Bluetooth MANET Demo update")
-                    .setDescription("Downloading the latest APK from GitHub")
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setMimeType("application/vnd.android.package-archive")
-                    .setAllowedOverMetered(true)
-                    .setAllowedOverRoaming(true);
+        appendLog("Checking GitHub for the latest APK...");
+        new Thread(() -> {
+            try {
+                HttpURLConnection connection = (HttpURLConnection) new URL(LATEST_RELEASE_API).openConnection();
+                connection.setRequestMethod("GET");
+                connection.setRequestProperty("Accept", "application/vnd.github+json");
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(15000);
 
-            DownloadManager downloadManager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            downloadManager.enqueue(request);
-            appendLog("Downloading latest GitHub APK...");
-            Toast.makeText(this, "Download started. Open the notification when it finishes.", Toast.LENGTH_LONG).show();
-        } catch (Exception exception) {
-            appendLog("Download failed to start. Opening GitHub release page instead.");
-            Intent intent = new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://github.com/Devil1716/bluetooth-manet-android/releases/latest"));
-            startActivity(intent);
-        }
+                int responseCode = connection.getResponseCode();
+                if (responseCode < 200 || responseCode >= 300) {
+                    throw new IllegalStateException("GitHub API returned " + responseCode);
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                StringBuilder payload = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    payload.append(line);
+                }
+                reader.close();
+                connection.disconnect();
+
+                JSONObject release = new JSONObject(payload.toString());
+                String tagName = release.optString("tag_name", "latest");
+                JSONArray assets = release.optJSONArray("assets");
+                String apkUrl = null;
+
+                if (assets != null) {
+                    for (int index = 0; index < assets.length(); index++) {
+                        JSONObject asset = assets.getJSONObject(index);
+                        if ("app-debug.apk".equals(asset.optString("name"))) {
+                            apkUrl = asset.optString("browser_download_url");
+                            break;
+                        }
+                    }
+                }
+
+                final String resolvedUrl = apkUrl != null && !apkUrl.isEmpty() ? apkUrl : LATEST_RELEASE_PAGE;
+                runOnUiThread(() -> {
+                    appendLog("Opening GitHub release " + tagName + "...");
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(resolvedUrl)));
+                    Toast.makeText(this, "Opening the latest release in your browser.", Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception exception) {
+                runOnUiThread(() -> {
+                    appendLog("Update check failed. Opening releases page instead.");
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(LATEST_RELEASE_PAGE)));
+                    Toast.makeText(this, "Could not resolve the APK directly. Opening releases page.", Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
     }
 
     @SuppressLint("MissingPermission")
