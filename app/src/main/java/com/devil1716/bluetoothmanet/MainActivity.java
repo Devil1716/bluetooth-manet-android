@@ -41,10 +41,18 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private EditText nodeIdInput;
     private EditText destinationInput;
     private EditText messageInput;
+    private boolean pendingDiscovery;
+    private boolean pendingListening;
 
     private final ActivityResultLauncher<Intent> enableBluetoothLauncher =
-            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result ->
-                    appendLog("Bluetooth enable flow finished."));
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                appendLog("Bluetooth enable flow finished.");
+                BluetoothAdapter adapter = meshManager.getAdapter();
+                if (adapter != null && adapter.isEnabled()) {
+                    preloadBondedDevices();
+                    resumePendingActions();
+                }
+            });
 
     private final ActivityResultLauncher<Intent> discoverableLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result ->
@@ -61,6 +69,10 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 }
 
                 appendLog(allGranted ? "Permissions granted." : "Some Bluetooth permissions were denied.");
+                if (allGranted) {
+                    preloadBondedDevices();
+                    resumePendingActions();
+                }
             });
 
     private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
@@ -76,6 +88,8 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 PeerDevice peer = new PeerDevice(device.getName(), device.getAddress());
                 discoveredPeers.put(peer.getAddress(), peer);
                 refreshPeerList();
+            } else if (BluetoothAdapter.ACTION_DISCOVERY_STARTED.equals(action)) {
+                appendLog("Discovery started...");
             } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
                 appendLog(String.format(Locale.US, "Discovery finished. %d peer(s) listed.", discoveredPeers.size()));
             }
@@ -99,6 +113,11 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 this,
                 discoveryReceiver,
                 new IntentFilter(BluetoothDevice.ACTION_FOUND),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(
+                this,
+                discoveryReceiver,
+                new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_STARTED),
                 ContextCompat.RECEIVER_NOT_EXPORTED);
         ContextCompat.registerReceiver(
                 this,
@@ -140,7 +159,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         enableButton.setOnClickListener(v -> ensureBluetoothEnabled());
         discoverableButton.setOnClickListener(v -> requestDiscoverableMode());
         discoverButton.setOnClickListener(v -> startDiscovery());
-        listenButton.setOnClickListener(v -> meshManager.startAccepting());
+        listenButton.setOnClickListener(v -> startListening());
         sendButton.setOnClickListener(v -> {
             meshManager.setMyNodeId(nodeIdInput.getText().toString());
             meshManager.sendNewMessage(destinationInput.getText().toString(), messageInput.getText().toString());
@@ -177,6 +196,17 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         }
     }
 
+    private void ensureBluetoothEnabledForAction() {
+        BluetoothAdapter adapter = meshManager.getAdapter();
+        if (adapter == null) {
+            return;
+        }
+        if (!adapter.isEnabled()) {
+            appendLog("Bluetooth is off. Requesting enable...");
+            enableBluetoothLauncher.launch(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
+        }
+    }
+
     private void requestDiscoverableMode() {
         Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
         discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300);
@@ -189,8 +219,14 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         if (adapter == null) {
             return;
         }
+        if (!adapter.isEnabled()) {
+            pendingDiscovery = true;
+            ensureBluetoothEnabledForAction();
+            return;
+        }
         if (!hasScanPermission()) {
             appendLog("Bluetooth scan permission missing.");
+            pendingDiscovery = true;
             requestNeededPermissions();
             return;
         }
@@ -200,7 +236,26 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             adapter.cancelDiscovery();
         }
         boolean started = adapter.startDiscovery();
-        appendLog(started ? "Discovery started..." : "Failed to start discovery.");
+        appendLog(started ? "Discovery request sent." : "Failed to start discovery. Check Bluetooth state and permissions.");
+    }
+
+    private void startListening() {
+        BluetoothAdapter adapter = meshManager.getAdapter();
+        if (adapter == null) {
+            return;
+        }
+        if (!adapter.isEnabled()) {
+            pendingListening = true;
+            ensureBluetoothEnabledForAction();
+            return;
+        }
+        if (!hasConnectPermission()) {
+            appendLog("Bluetooth connect permission missing.");
+            pendingListening = true;
+            requestNeededPermissions();
+            return;
+        }
+        meshManager.startAccepting();
     }
 
     @SuppressLint("MissingPermission")
@@ -238,6 +293,17 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
 
     private void appendLog(String message) {
         runOnUiThread(() -> logView.append(message + "\n"));
+    }
+
+    private void resumePendingActions() {
+        if (pendingListening && hasConnectPermission()) {
+            pendingListening = false;
+            startListening();
+        }
+        if (pendingDiscovery && hasScanPermission()) {
+            pendingDiscovery = false;
+            startDiscovery();
+        }
     }
 
     @Override
