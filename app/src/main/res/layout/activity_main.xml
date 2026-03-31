@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:fillViewport="true">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="16dp">
 
@@ -72,13 +77,18 @@
         android:text="@string/discovered_peers"
         android:textStyle="bold" />
 
-    <ListView
-        android:id="@+id/peerListView"
+    <Spinner
+        android:id="@+id/peerSpinner"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" />
+
+    <Button
+        android:id="@+id/connectSelectedButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:choiceMode="singleChoice"
-        android:dividerHeight="1dp" />
+        android:text="@string/connect_selected_peer" />
 
     <TextView
         android:id="@+id/connectionLabel"
@@ -123,6 +133,27 @@
         android:text="@string/send_message" />
 
     <TextView
+        android:id="@+id/inboxLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/received_messages"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/inboxView"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:layout_marginTop="8dp"
+        android:background="#EEF6EE"
+        android:gravity="top|start"
+        android:padding="12dp"
+        android:text="@string/no_messages_yet"
+        android:textColor="#1F2937"
+        android:textSize="12sp"
+        android:typeface="monospace" />
+
+    <TextView
         android:id="@+id/logLabel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -144,3 +175,4 @@
         android:typeface="monospace" />
 
 </LinearLayout>
+</ScrollView>

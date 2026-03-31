@@ -8,10 +8,13 @@
     <string name="start_listening">Start Listening</string>
     <string name="update_from_github">Download Latest APK</string>
     <string name="discovered_peers">Discovered / Paired Peers</string>
+    <string name="connect_selected_peer">Connect Selected Peer</string>
     <string name="active_connections">Active RFCOMM Connections</string>
     <string name="no_connections">No active connections yet.</string>
     <string name="destination_hint">Destination node ID (example: C)</string>
     <string name="message_hint">Message body</string>
     <string name="send_message">Send Message</string>
+    <string name="received_messages">Received Messages</string>
+    <string name="no_messages_yet">No messages received yet.</string>
     <string name="event_log">Event Log</string>
 </resources>

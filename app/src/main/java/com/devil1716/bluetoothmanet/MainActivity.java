@@ -17,7 +17,7 @@ import android.text.method.ScrollingMovementMethod;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.ListView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -42,6 +42,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private BluetoothMeshManager meshManager;
     private ArrayAdapter<PeerDevice> peerAdapter;
     private TextView logView;
+    private TextView inboxView;
     private TextView connectionView;
     private EditText nodeIdInput;
     private EditText destinationInput;
@@ -136,18 +137,24 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
 
     private void bindViews() {
         logView = findViewById(R.id.logView);
+        inboxView = findViewById(R.id.inboxView);
         connectionView = findViewById(R.id.connectionView);
         nodeIdInput = findViewById(R.id.nodeIdInput);
         destinationInput = findViewById(R.id.destinationInput);
         messageInput = findViewById(R.id.messageInput);
         logView.setMovementMethod(new ScrollingMovementMethod());
+        inboxView.setMovementMethod(new ScrollingMovementMethod());
 
-        ListView peerListView = findViewById(R.id.peerListView);
-        peerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, new ArrayList<>());
-        peerListView.setAdapter(peerAdapter);
-        peerListView.setOnItemClickListener((parent, view, position, id) -> {
-            PeerDevice peer = peerAdapter.getItem(position);
+        Spinner peerSpinner = findViewById(R.id.peerSpinner);
+        peerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
+        peerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        peerSpinner.setAdapter(peerAdapter);
+
+        Button connectButton = findViewById(R.id.connectSelectedButton);
+        connectButton.setOnClickListener(v -> {
+            PeerDevice peer = (PeerDevice) peerSpinner.getSelectedItem();
             if (peer == null) {
+                Toast.makeText(this, "No peer selected.", Toast.LENGTH_SHORT).show();
                 return;
             }
             BluetoothAdapter adapter = meshManager.getAdapter();
@@ -355,6 +362,12 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     @Override
     public void onMessageDelivered(ManetMessage message) {
         appendLog("Delivered to " + message.getDestination() + ": " + message.getData());
+        runOnUiThread(() -> {
+            if (getString(R.string.no_messages_yet).contentEquals(inboxView.getText())) {
+                inboxView.setText("");
+            }
+            inboxView.append(message.getSource() + " -> " + message.getDestination() + ": " + message.getData() + "\n");
+        });
     }
 
     @Override
