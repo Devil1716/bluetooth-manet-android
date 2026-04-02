@@ -1,6 +1,6 @@
 # Windows MANET Node
 
-This folder contains a Windows-native Python CLI that can participate in the same Bluetooth RFCOMM MANET used by the Android app.
+This folder contains a Windows-native interactive CLI that can participate in the same Bluetooth RFCOMM MANET used by the Android app.
 
 ## What it can do
 
@@ -45,19 +45,44 @@ cd windows-node
 python manet_node.py --node-id LAPTOP
 ```
 
+## Interface
+
+When you launch the script it now shows:
+
+- a startup banner
+- a guided `menu`
+- command-based control if you prefer typing
+- cached paired-device list
+- inbox and recent logs views
+
 ## Commands
 
 - `devices`
   Lists paired Bluetooth devices that Windows exposes to the script.
 
+- `menu`
+  Opens the guided action menu.
+
+- `status`
+  Shows node status, peer count, and cache counts.
+
 - `connect <index>`
-  Connects to the numbered device from `devices`.
+  Connects to the numbered device from the last `devices` refresh.
 
 - `peers`
   Shows active RFCOMM peers.
 
 - `send <DEST> <MESSAGE>`
   Sends a MANET payload into the mesh.
+
+- `inbox`
+  Shows recently delivered messages.
+
+- `logs`
+  Shows recent event log lines.
+
+- `clear`
+  Clears the terminal and redraws the banner.
 
 - `quit`
   Stops the node.
@@ -70,6 +95,7 @@ manet> devices
    \\?\BTHENUM#Dev_...
 manet> connect 1
 manet> send C hello from laptop
+manet> inbox
 ```
 
 ## Notes

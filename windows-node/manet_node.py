@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -18,6 +19,33 @@ from winrt.windows.storage.streams import DataReader, DataWriter, InputStreamOpt
 SERVICE_UUID = uuid.UUID("12345678-1234-1234-1234-123456789abc")
 SERVICE_ID = RfcommServiceId.from_uuid(SERVICE_UUID)
 DEFAULT_TTL = 3
+
+
+def print_banner(node_id: str) -> None:
+    print("=" * 72)
+    print(" Bluetooth MANET Windows Node ".center(72, "="))
+    print("=" * 72)
+    print(f" Node ID   : {node_id}")
+    print(f" Service   : {SERVICE_UUID}")
+    print(" Type 'help' to see commands or 'menu' for the guided interface.")
+    print("=" * 72)
+
+
+def print_help() -> None:
+    print(
+        "\nCommands:\n"
+        "  menu                 Show the guided action menu\n"
+        "  status               Show node status and peer count\n"
+        "  devices              Refresh and list paired Bluetooth devices\n"
+        "  connect <index>      Connect to a device from the last devices list\n"
+        "  peers                Show active RFCOMM peers\n"
+        "  send <DEST> <MSG>    Send a message into the mesh\n"
+        "  inbox                Show recently delivered messages\n"
+        "  logs                 Show recent event log lines\n"
+        "  clear                Clear the terminal\n"
+        "  help                 Show this help text\n"
+        "  quit                 Stop the node\n"
+    )
 
 
 @dataclass(frozen=True)
@@ -96,6 +124,15 @@ class WindowsManetNode:
         self.provider: RfcommServiceProvider | None = None
         self.reader_tasks: set[asyncio.Task] = set()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.cached_devices: list[tuple[str, str]] = []
+        self.delivered_messages: list[str] = []
+        self.event_log: list[str] = []
+
+    def log(self, message: str) -> None:
+        entry = message.strip()
+        self.event_log.append(entry)
+        self.event_log = self.event_log[-50:]
+        print(entry)
 
     async def start_listener(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -104,7 +141,7 @@ class WindowsManetNode:
         self.listener.add_connection_received(self._on_connection_received)
         await self.listener.bind_service_name_async(self.provider.service_id.as_string())
         self.provider.start_advertising_with_radio_discoverability(self.listener, True)
-        print(f"[listen] advertising {self.provider.service_id.as_string()} for node {self.node_id}")
+        self.log(f"[listen] advertising {self.provider.service_id.as_string()} for node {self.node_id}")
 
     async def stop(self) -> None:
         for task in list(self.reader_tasks):
@@ -133,6 +170,7 @@ class WindowsManetNode:
             item = (label, device.id)
             if item not in results:
                 results.append(item)
+        self.cached_devices = results
         return results
 
     async def connect_to_device(self, device_id: str) -> None:
@@ -153,19 +191,19 @@ class WindowsManetNode:
         await socket.connect_async(service.connection_host_name, service.connection_service_name)
         label = f"{bt_device.name} [{device_id}]"
         await self._register_connection(label, socket)
-        print(f"[connect] connected to {label}")
+        self.log(f"[connect] connected to {label}")
 
     async def send_message(self, destination: str, body: str) -> None:
         destination = destination.strip().upper()
         body = body.strip()
         if not destination or not body:
-            print("[send] destination and message are required")
+            self.log("[send] destination and message are required")
             return
 
         message = ManetMessage.outbound(self.node_id, destination, body)
         self.seen_messages.add(message.message_id)
         if destination == self.node_id:
-            print(f"[deliver] {message.source} -> {message.destination}: {message.data}")
+            self.log(f"[deliver] {message.source} -> {message.destination}: {message.data}")
             return
         await self.forward_message(message, None)
 
@@ -178,9 +216,9 @@ class WindowsManetNode:
                 await peer.write_line(message.to_wire())
                 forwarded += 1
             except Exception as exc:
-                print(f"[forward] failed via {label}: {exc}")
+                self.log(f"[forward] failed via {label}: {exc}")
                 self._drop_connection(label)
-        print(f"[forward] {message.message_id} -> {forwarded} peer(s)")
+        self.log(f"[forward] {message.message_id} -> {forwarded} peer(s)")
 
     async def _register_connection(self, label: str, socket: StreamSocket) -> None:
         if label in self.connections:
@@ -192,7 +230,7 @@ class WindowsManetNode:
         task.add_done_callback(self.reader_tasks.discard)
 
     async def _reader_loop(self, peer: PeerConnection) -> None:
-        print(f"[peer] active {peer.label}")
+        self.log(f"[peer] active {peer.label}")
         try:
             while True:
                 payload = await peer.read_line()
@@ -202,7 +240,7 @@ class WindowsManetNode:
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            print(f"[peer] read failed from {peer.label}: {exc}")
+            self.log(f"[peer] read failed from {peer.label}: {exc}")
         finally:
             self._drop_connection(peer.label)
 
@@ -210,21 +248,24 @@ class WindowsManetNode:
         try:
             message = ManetMessage.from_wire(payload)
         except Exception:
-            print(f"[rx] ignored malformed payload from {source_label}: {payload}")
+            self.log(f"[rx] ignored malformed payload from {source_label}: {payload}")
             return
 
         if message.message_id in self.seen_messages:
             return
 
         self.seen_messages.add(message.message_id)
-        print(f"[rx] {message.source} -> {message.destination} ttl={message.ttl} via {source_label}")
+        self.log(f"[rx] {message.source} -> {message.destination} ttl={message.ttl} via {source_label}")
 
         if message.destination.upper() == self.node_id:
-            print(f"[deliver] {message.source} -> {message.destination}: {message.data}")
+            delivered = f"{message.source} -> {message.destination}: {message.data}"
+            self.delivered_messages.append(delivered)
+            self.delivered_messages = self.delivered_messages[-20:]
+            self.log(f"[deliver] {delivered}")
             return
 
         if message.ttl <= 1:
-            print(f"[drop] {message.message_id} TTL expired")
+            self.log(f"[drop] {message.message_id} TTL expired")
             return
 
         await self.forward_message(message.decrement_ttl(), source_label)
@@ -233,12 +274,12 @@ class WindowsManetNode:
         peer = self.connections.pop(label, None)
         if peer is not None:
             peer.close()
-            print(f"[peer] closed {label}")
+            self.log(f"[peer] closed {label}")
 
     def _on_connection_received(self, _sender, args) -> None:
         label = f"incoming-{len(self.connections) + 1}"
         if self.loop is None:
-            print("[peer] no event loop available for incoming connection")
+            self.log("[peer] no event loop available for incoming connection")
             try:
                 args.socket.close()
             except Exception:
@@ -251,32 +292,83 @@ class WindowsManetNode:
         self.reader_tasks.add(task)
         task.add_done_callback(self.reader_tasks.discard)
 
+    def print_status(self) -> None:
+        print(
+            f"\nStatus\n"
+            f"  Node ID     : {self.node_id}\n"
+            f"  Peers       : {len(self.connections)}\n"
+            f"  Seen msgs   : {len(self.seen_messages)}\n"
+            f"  Cached devs : {len(self.cached_devices)}\n"
+        )
+
+    def print_devices(self) -> None:
+        if not self.cached_devices:
+            print("No paired Bluetooth devices found. Run 'devices' to refresh.")
+            return
+        print("\nPaired Devices")
+        for index, (name, device_id) in enumerate(self.cached_devices, start=1):
+            print(f"  {index}. {name}")
+            print(f"     {device_id}")
+
+    def print_peers(self) -> None:
+        if not self.connections:
+            print("No active peers.")
+            return
+        print("\nActive Peers")
+        for index, label in enumerate(self.connections, start=1):
+            print(f"  {index}. {label}")
+
+    def print_inbox(self) -> None:
+        if not self.delivered_messages:
+            print("No delivered messages yet.")
+            return
+        print("\nInbox")
+        for line in self.delivered_messages[-10:]:
+            print(f"  {line}")
+
+    def print_logs(self) -> None:
+        if not self.event_log:
+            print("No log lines yet.")
+            return
+        print("\nRecent Logs")
+        for line in self.event_log[-15:]:
+            print(f"  {line}")
+
 
 async def command_loop(node: WindowsManetNode) -> None:
-    print("Commands: devices, connect <index>, peers, send <DEST> <MESSAGE>, quit")
+    print_help()
     while True:
         raw = await asyncio.to_thread(input, "manet> ")
         command = raw.strip()
         if not command:
             continue
 
-        if command == "quit":
+        if command in {"quit", "exit"}:
             return
 
+        if command in {"help", "?"}:
+            print_help()
+            continue
+
+        if command == "menu":
+            await guided_menu(node)
+            continue
+
+        if command == "status":
+            node.print_status()
+            continue
+
         if command == "devices":
-            devices = await node.list_bluetooth_devices()
-            if not devices:
-                print("No paired Bluetooth devices found. Pair the phone in Windows first.")
-                continue
-            for index, (name, device_id) in enumerate(devices, start=1):
-                print(f"{index}. {name}\n   {device_id}")
+            await node.list_bluetooth_devices()
+            node.print_devices()
             continue
 
         if command.startswith("connect "):
-            devices = await node.list_bluetooth_devices()
             try:
                 index = int(command.split(maxsplit=1)[1]) - 1
-                _, device_id = devices[index]
+                if not node.cached_devices:
+                    await node.list_bluetooth_devices()
+                _, device_id = node.cached_devices[index]
             except Exception:
                 print("Usage: connect <device number from 'devices'>")
                 continue
@@ -287,11 +379,7 @@ async def command_loop(node: WindowsManetNode) -> None:
             continue
 
         if command == "peers":
-            if not node.connections:
-                print("No active peers.")
-                continue
-            for label in node.connections:
-                print(label)
+            node.print_peers()
             continue
 
         if command.startswith("send "):
@@ -302,7 +390,69 @@ async def command_loop(node: WindowsManetNode) -> None:
             await node.send_message(parts[1], parts[2])
             continue
 
+        if command == "inbox":
+            node.print_inbox()
+            continue
+
+        if command == "logs":
+            node.print_logs()
+            continue
+
+        if command == "clear":
+            clear_screen()
+            print_banner(node.node_id)
+            continue
+
         print("Unknown command.")
+
+
+async def guided_menu(node: WindowsManetNode) -> None:
+    print(
+        "\nMenu\n"
+        "  1. Refresh paired devices\n"
+        "  2. Connect to a paired device\n"
+        "  3. Show active peers\n"
+        "  4. Send a message\n"
+        "  5. Show inbox\n"
+        "  6. Show recent logs\n"
+        "  7. Show status\n"
+        "  8. Clear screen\n"
+        "  9. Return\n"
+    )
+    choice = (await asyncio.to_thread(input, "Choose an action: ")).strip()
+    if choice == "1":
+        await node.list_bluetooth_devices()
+        node.print_devices()
+    elif choice == "2":
+        await node.list_bluetooth_devices()
+        node.print_devices()
+        if not node.cached_devices:
+            return
+        picked = (await asyncio.to_thread(input, "Device number: ")).strip()
+        try:
+            index = int(picked) - 1
+            _, device_id = node.cached_devices[index]
+            await node.connect_to_device(device_id)
+        except Exception as exc:
+            print(f"[connect] failed: {exc}")
+    elif choice == "3":
+        node.print_peers()
+    elif choice == "4":
+        destination = (await asyncio.to_thread(input, "Destination node ID: ")).strip()
+        body = (await asyncio.to_thread(input, "Message: ")).strip()
+        await node.send_message(destination, body)
+    elif choice == "5":
+        node.print_inbox()
+    elif choice == "6":
+        node.print_logs()
+    elif choice == "7":
+        node.print_status()
+    elif choice == "8":
+        clear_screen()
+
+
+def clear_screen() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
 
 
 async def async_main() -> int:
@@ -311,6 +461,7 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     node = WindowsManetNode(args.node_id)
+    print_banner(node.node_id)
     await node.start_listener()
     try:
         await command_loop(node)
