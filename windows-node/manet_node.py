@@ -103,6 +103,29 @@ def print_banner(node_id: str) -> None:
     print(border)
 
 
+def render_dashboard(node: "WindowsManetNode") -> None:
+    clear_screen()
+    figure_palette = (Style.MAGENTA, Style.BOLD)
+    for line in ASCII_FIGURE[:-1]:
+        print(colorize(line[:34], *figure_palette) + "   " + colorize(line[34:], Style.DIM))
+    print(colorize(ASCII_FIGURE[-1], Style.YELLOW, Style.BOLD))
+    print_banner(node.node_id)
+    print(colorize(" Live Status ", Style.BOLD, Style.CYAN))
+    print(
+        colorize("  Peers: ", Style.GREEN, Style.BOLD)
+        + str(len(node.connections))
+        + colorize("   Seen: ", Style.GREEN, Style.BOLD)
+        + str(len(node.seen_messages))
+        + colorize("   Cached Devices: ", Style.GREEN, Style.BOLD)
+        + str(len(node.cached_devices))
+    )
+    print(colorize(" Recent Logs ", Style.BOLD, Style.CYAN))
+    recent = node.event_log[-6:] if node.event_log else ["No activity yet."]
+    for line in recent:
+        print("  " + colorize(line, Style.DIM))
+    print(colorize("-" * 72, Style.BLUE))
+
+
 def print_help() -> None:
     print(
         colorize("\nCommands:\n", Style.BOLD, Style.CYAN)
@@ -421,11 +444,13 @@ class WindowsManetNode:
 
 
 async def command_loop(node: WindowsManetNode) -> None:
+    render_dashboard(node)
     print_help()
     while True:
         raw = await asyncio.to_thread(input, "manet> ")
         command = raw.strip()
         if not command:
+            render_dashboard(node)
             continue
 
         if command in {"quit", "exit"}:
@@ -437,14 +462,17 @@ async def command_loop(node: WindowsManetNode) -> None:
 
         if command == "menu":
             await guided_menu(node)
+            render_dashboard(node)
             continue
 
         if command == "status":
+            render_dashboard(node)
             node.print_status()
             continue
 
         if command == "devices":
             await node.list_bluetooth_devices()
+            render_dashboard(node)
             node.print_devices()
             continue
 
@@ -461,9 +489,11 @@ async def command_loop(node: WindowsManetNode) -> None:
                 await node.connect_to_device(device_id)
             except Exception as exc:
                 print(f"[connect] failed: {exc}")
+            render_dashboard(node)
             continue
 
         if command == "peers":
+            render_dashboard(node)
             node.print_peers()
             continue
 
@@ -473,22 +503,25 @@ async def command_loop(node: WindowsManetNode) -> None:
                 print("Usage: send <DEST> <MESSAGE>")
                 continue
             await node.send_message(parts[1], parts[2])
+            render_dashboard(node)
             continue
 
         if command == "inbox":
+            render_dashboard(node)
             node.print_inbox()
             continue
 
         if command == "logs":
+            render_dashboard(node)
             node.print_logs()
             continue
 
         if command == "clear":
-            clear_screen()
-            print_banner(node.node_id)
+            render_dashboard(node)
             continue
 
         print("Unknown command.")
+        render_dashboard(node)
 
 
 async def guided_menu(node: WindowsManetNode) -> None:
@@ -546,7 +579,6 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     node = WindowsManetNode(args.node_id)
-    print_banner(node.node_id)
     await node.start_listener()
     try:
         await command_loop(node)
