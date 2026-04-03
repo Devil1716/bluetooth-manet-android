@@ -36,24 +36,14 @@ class Style:
 
 
 ASCII_FIGURE = [
-    "                 .-==-.                         ",
-    "              .:=*####*=-.                      ",
-    "            .-*############=.                   ",
-    "          .-*#####*++*######*:                  ",
-    "         :######=.    .-*#####:                 ",
-    "        =#####=          :#####+                ",
-    "       :#####:    .--.    +#####:               ",
-    "       *####+   .+####+.   #####*               ",
-    "       #####:   *######*   :#####               ",
-    "       *####+   .+####+.   #####*               ",
-    "       :#####:    '--'    +#####:               ",
-    "        =#####=          :#####+                ",
-    "         :######=.    .-*#####:                 ",
-    "          .-*#####*++*######*:                  ",
-    "            .-*############=.                   ",
-    "              .:=*####*=-.                      ",
-    "                 .-==-.                         ",
-    "          MANET NODE :: Bluetooth Mesh          ",
+    "      .-==-.      ",
+    "   .:=*####*=-.   ",
+    " .-*#####++####*: ",
+    " :####=.  .=####: ",
+    " :####=    =####: ",
+    " .-*#####++####*: ",
+    "   .:=*####*=-.   ",
+    "      .-==-.      ",
 ]
 
 
@@ -82,64 +72,69 @@ def animate_startup() -> None:
     for styles in palette:
         clear_screen()
         print()
-        for line in ASCII_FIGURE[:-1]:
+        for line in ASCII_FIGURE:
             print(colorize(line.center(72), *styles))
-        print(colorize(ASCII_FIGURE[-1].center(72), Style.YELLOW, Style.BOLD))
         print()
         print(colorize("Booting Bluetooth mesh terminal...", Style.DIM, Style.CYAN).center(72))
         time.sleep(0.14)
     clear_screen()
 
 
-def print_banner(node_id: str) -> None:
-    border = colorize("=" * 72, Style.BLUE, Style.BOLD)
-    title = colorize(" Bluetooth MANET Windows Node ".center(72, "="), Style.CYAN, Style.BOLD)
-    print(border)
-    print(title)
-    print(border)
-    print(colorize(f" Node ID   : {node_id}", Style.GREEN, Style.BOLD))
-    print(colorize(f" Service   : {SERVICE_UUID}", Style.YELLOW))
-    print(colorize(" Type 'help' to see commands or 'menu' for the guided interface.", Style.DIM))
-    print(border)
+def make_box(title: str, lines: list[str], width: int = 46) -> list[str]:
+    top = colorize("+" + "-" * (width - 2) + "+", Style.BLUE)
+    bottom = colorize("+" + "-" * (width - 2) + "+", Style.BLUE)
+    title_text = f" {title} "
+    header = colorize("|", Style.BLUE) + colorize(title_text.ljust(width - 2), Style.BOLD, Style.CYAN) + colorize("|", Style.BLUE)
+    body = []
+    for line in lines:
+        body.append(colorize("|", Style.BLUE) + line.ljust(width - 2) + colorize("|", Style.BLUE))
+    return [top, header] + body + [bottom]
 
 
 def render_dashboard(node: "WindowsManetNode") -> None:
     clear_screen()
-    figure_palette = (Style.MAGENTA, Style.BOLD)
-    for line in ASCII_FIGURE[:-1]:
-        print(colorize(line[:34], *figure_palette) + "   " + colorize(line[34:], Style.DIM))
-    print(colorize(ASCII_FIGURE[-1], Style.YELLOW, Style.BOLD))
-    print_banner(node.node_id)
-    print(colorize(" Live Status ", Style.BOLD, Style.CYAN))
-    print(
-        colorize("  Peers: ", Style.GREEN, Style.BOLD)
-        + str(len(node.connections))
-        + colorize("   Seen: ", Style.GREEN, Style.BOLD)
-        + str(len(node.seen_messages))
-        + colorize("   Cached Devices: ", Style.GREEN, Style.BOLD)
-        + str(len(node.cached_devices))
+    left_box = make_box(
+        "MANET",
+        [colorize(line.center(42), Style.MAGENTA, Style.BOLD) for line in ASCII_FIGURE]
+        + [colorize("bluetooth mesh terminal".center(42), Style.DIM)],
     )
-    print(colorize(" Recent Logs ", Style.BOLD, Style.CYAN))
-    recent = node.event_log[-6:] if node.event_log else ["No activity yet."]
-    for line in recent:
-        print("  " + colorize(line, Style.DIM))
-    print(colorize("-" * 72, Style.BLUE))
+    recent = node.event_log[-8:] if node.event_log else ["No activity yet."]
+    right_box = make_box(
+        "Session",
+        [
+            colorize(f"node     {node.node_id}", Style.GREEN, Style.BOLD),
+            colorize(f"service  {SERVICE_UUID}", Style.YELLOW),
+            colorize(f"peers    {len(node.connections)}", Style.GREEN),
+            colorize(f"seen     {len(node.seen_messages)}", Style.GREEN),
+            colorize(f"devices  {len(node.cached_devices)}", Style.GREEN),
+            "",
+            colorize("recent", Style.CYAN, Style.BOLD),
+        ] + [colorize(f"- {line[:34]}", Style.DIM) for line in recent[:6]],
+    )
+    max_lines = max(len(left_box), len(right_box))
+    left_box.extend([" " * 46] * (max_lines - len(left_box)))
+    right_box.extend([" " * 46] * (max_lines - len(right_box)))
+    for left, right in zip(left_box, right_box):
+        print(left + "  " + right)
+    print()
+    print(colorize("Commands", Style.BOLD, Style.CYAN) + colorize("  menu  status  devices  connect <n>  send <DEST> <MSG>  inbox  logs  quit", Style.DIM))
+    print(colorize("-" * 94, Style.BLUE))
 
 
 def print_help() -> None:
     print(
         colorize("\nCommands:\n", Style.BOLD, Style.CYAN)
-        + "  menu                 Show the guided action menu\n"
-        + "  status               Show node status and peer count\n"
-        + "  devices              Refresh and list paired Bluetooth devices\n"
-        + "  connect <index>      Connect to a device from the last devices list\n"
-        + "  peers                Show active RFCOMM peers\n"
-        + "  send <DEST> <MSG>    Send a message into the mesh\n"
-        + "  inbox                Show recently delivered messages\n"
-        + "  logs                 Show recent event log lines\n"
-        + "  clear                Clear the terminal\n"
-        + "  help                 Show this help text\n"
-        + "  quit                 Stop the node\n"
+        + "  menu                 guided action picker\n"
+        + "  status               show node status\n"
+        + "  devices              refresh paired bluetooth devices\n"
+        + "  connect <index>      connect to device from latest device list\n"
+        + "  peers                show active rfcomm peers\n"
+        + "  send <DEST> <MSG>    send a message into the mesh\n"
+        + "  inbox                show delivered messages\n"
+        + "  logs                 show recent event log lines\n"
+        + "  clear                redraw the dashboard\n"
+        + "  help                 show this help text\n"
+        + "  quit                 stop the node\n"
     )
 
 
@@ -447,7 +442,7 @@ async def command_loop(node: WindowsManetNode) -> None:
     render_dashboard(node)
     print_help()
     while True:
-        raw = await asyncio.to_thread(input, "manet> ")
+        raw = await asyncio.to_thread(input, colorize("› ", Style.BOLD, Style.CYAN))
         command = raw.strip()
         if not command:
             render_dashboard(node)
