@@ -1,7 +1,9 @@
 import argparse
 import asyncio
+import ctypes
 import os
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Optional
@@ -21,30 +23,100 @@ SERVICE_ID = RfcommServiceId.from_uuid(SERVICE_UUID)
 DEFAULT_TTL = 3
 
 
+class Style:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    CYAN = "\033[96m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    MAGENTA = "\033[95m"
+    RED = "\033[91m"
+
+
+ASCII_FIGURE = [
+    "                 .-==-.                         ",
+    "              .:=*####*=-.                      ",
+    "            .-*############=.                   ",
+    "          .-*#####*++*######*:                  ",
+    "         :######=.    .-*#####:                 ",
+    "        =#####=          :#####+                ",
+    "       :#####:    .--.    +#####:               ",
+    "       *####+   .+####+.   #####*               ",
+    "       #####:   *######*   :#####               ",
+    "       *####+   .+####+.   #####*               ",
+    "       :#####:    '--'    +#####:               ",
+    "        =#####=          :#####+                ",
+    "         :######=.    .-*#####:                 ",
+    "          .-*#####*++*######*:                  ",
+    "            .-*############=.                   ",
+    "              .:=*####*=-.                      ",
+    "                 .-==-.                         ",
+    "          MANET NODE :: Bluetooth Mesh          ",
+]
+
+
+def enable_ansi_colors() -> None:
+    if os.name != "nt":
+        return
+    try:
+        handle = ctypes.windll.kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            ctypes.windll.kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
+def colorize(text: str, *styles: str) -> str:
+    return "".join(styles) + text + Style.RESET
+
+
+def animate_startup() -> None:
+    palette = [
+        (Style.CYAN, Style.BOLD),
+        (Style.BLUE, Style.BOLD),
+        (Style.MAGENTA, Style.BOLD),
+    ]
+    for styles in palette:
+        clear_screen()
+        print()
+        for line in ASCII_FIGURE[:-1]:
+            print(colorize(line.center(72), *styles))
+        print(colorize(ASCII_FIGURE[-1].center(72), Style.YELLOW, Style.BOLD))
+        print()
+        print(colorize("Booting Bluetooth mesh terminal...", Style.DIM, Style.CYAN).center(72))
+        time.sleep(0.14)
+    clear_screen()
+
+
 def print_banner(node_id: str) -> None:
-    print("=" * 72)
-    print(" Bluetooth MANET Windows Node ".center(72, "="))
-    print("=" * 72)
-    print(f" Node ID   : {node_id}")
-    print(f" Service   : {SERVICE_UUID}")
-    print(" Type 'help' to see commands or 'menu' for the guided interface.")
-    print("=" * 72)
+    border = colorize("=" * 72, Style.BLUE, Style.BOLD)
+    title = colorize(" Bluetooth MANET Windows Node ".center(72, "="), Style.CYAN, Style.BOLD)
+    print(border)
+    print(title)
+    print(border)
+    print(colorize(f" Node ID   : {node_id}", Style.GREEN, Style.BOLD))
+    print(colorize(f" Service   : {SERVICE_UUID}", Style.YELLOW))
+    print(colorize(" Type 'help' to see commands or 'menu' for the guided interface.", Style.DIM))
+    print(border)
 
 
 def print_help() -> None:
     print(
-        "\nCommands:\n"
-        "  menu                 Show the guided action menu\n"
-        "  status               Show node status and peer count\n"
-        "  devices              Refresh and list paired Bluetooth devices\n"
-        "  connect <index>      Connect to a device from the last devices list\n"
-        "  peers                Show active RFCOMM peers\n"
-        "  send <DEST> <MSG>    Send a message into the mesh\n"
-        "  inbox                Show recently delivered messages\n"
-        "  logs                 Show recent event log lines\n"
-        "  clear                Clear the terminal\n"
-        "  help                 Show this help text\n"
-        "  quit                 Stop the node\n"
+        colorize("\nCommands:\n", Style.BOLD, Style.CYAN)
+        + "  menu                 Show the guided action menu\n"
+        + "  status               Show node status and peer count\n"
+        + "  devices              Refresh and list paired Bluetooth devices\n"
+        + "  connect <index>      Connect to a device from the last devices list\n"
+        + "  peers                Show active RFCOMM peers\n"
+        + "  send <DEST> <MSG>    Send a message into the mesh\n"
+        + "  inbox                Show recently delivered messages\n"
+        + "  logs                 Show recent event log lines\n"
+        + "  clear                Clear the terminal\n"
+        + "  help                 Show this help text\n"
+        + "  quit                 Stop the node\n"
     )
 
 
@@ -132,7 +204,20 @@ class WindowsManetNode:
         entry = message.strip()
         self.event_log.append(entry)
         self.event_log = self.event_log[-50:]
-        print(entry)
+        styled = entry
+        if entry.startswith("[listen]") or entry.startswith("[connect]") or entry.startswith("[deliver]"):
+            styled = colorize(entry, Style.GREEN)
+        elif entry.startswith("[forward]") or entry.startswith("[rx]"):
+            styled = colorize(entry, Style.CYAN)
+        elif entry.startswith("[drop]"):
+            styled = colorize(entry, Style.YELLOW)
+        elif entry.startswith("[peer]") and "failed" in entry.lower():
+            styled = colorize(entry, Style.RED)
+        elif entry.startswith("[peer]"):
+            styled = colorize(entry, Style.MAGENTA)
+        elif "failed" in entry.lower() or "no event loop" in entry.lower():
+            styled = colorize(entry, Style.RED)
+        print(styled)
 
     async def start_listener(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -472,9 +557,11 @@ async def async_main() -> int:
 
 def main() -> int:
     try:
+        enable_ansi_colors()
+        animate_startup()
         return asyncio.run(async_main())
     except KeyboardInterrupt:
-        print("\nExiting...")
+        print(colorize("\nExiting...", Style.DIM, Style.YELLOW))
         return 0
 
 
