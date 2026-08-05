@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 public class BleMeshAdvertiser {
-    private static final UUID SERVICE_UUID = UUID.fromString("12345678-1234-1234-1234-123456789abd");
+    public static final UUID SERVICE_UUID = UUID.fromString("12345678-1234-1234-1234-123456789abd");
     private final Context context;
     private BluetoothLeAdvertiser advertiser;
     public BleMeshAdvertiser(Context context) { this.context = context.getApplicationContext(); }

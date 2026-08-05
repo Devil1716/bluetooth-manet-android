@@ -21,7 +21,7 @@ import androidx.core.content.ContextCompat;
 import java.util.Collections;
 import java.util.List;
 
-public class MeshService extends Service implements BluetoothMeshManager.Listener {
+public class MeshService extends Service implements BluetoothMeshManager.Listener, BleMeshScanner.Listener {
     private static final String CHANNEL = "mesh_service";
     public static final String ACTION_MESSAGE_EVENT = "com.devil1716.bluetoothmanet.MESSAGE_EVENT";
     public static final String ACTION_MESH_STATUS = "com.devil1716.bluetoothmanet.MESH_STATUS";
@@ -29,6 +29,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private final Handler handler = new Handler();
     private BluetoothMeshManager manager;
     private BleMeshAdvertiser advertiser;
+    private BleMeshScanner scanner;
     private AppDatabase database;
     private String nodeId = "NODE";
     private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
@@ -69,6 +70,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         peerFilter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
         ContextCompat.registerReceiver(this, discoveryReceiver, peerFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
         advertiser = new BleMeshAdvertiser(this);
+        scanner = new BleMeshScanner(this, this);
         manager.setMyNodeId(nodeId);
         ensureTransportReady();
         handler.post(connector);
@@ -146,6 +148,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         manager.startAccepting();
         if (Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
                 == PackageManager.PERMISSION_GRANTED) advertiser.start(nodeId);
+        scanner.start();
     }
     private Notification notification(int count) {
         return new NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
@@ -157,7 +160,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager.class).createNotificationChannel(
                 new NotificationChannel(CHANNEL, "MANET mesh", NotificationManager.IMPORTANCE_LOW));
     }
-    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); unregisterReceiver(discoveryReceiver); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
+    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); unregisterReceiver(discoveryReceiver); if (scanner != null) scanner.stop(); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onLog(String message) { status(message); }
     @Override public void onConnectionsChanged(List<String> peers) {
@@ -202,5 +205,10 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     private void status(String message) {
         sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName()).putExtra("message", message));
+    }
+
+    @Override public void onMeshDeviceFound(BluetoothDevice device) {
+        status("MANET peer beacon found: " + device.getAddress());
+        if (manager != null) manager.connectToDevice(device);
     }
 }
