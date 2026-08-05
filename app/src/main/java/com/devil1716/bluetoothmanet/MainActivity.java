@@ -117,6 +117,22 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         }
     };
 
+    private final BroadcastReceiver meshEventReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (!MeshService.ACTION_MESSAGE_EVENT.equals(intent.getAction())) return;
+            String id = intent.getStringExtra("message_id");
+            MessageStatus status = MessageStatus.valueOf(intent.getStringExtra("status"));
+            if (status == MessageStatus.DELIVERED && intent.hasExtra("body")) {
+                ManetMessage message = new ManetMessage(id, intent.getStringExtra("source"),
+                        intent.getStringExtra("destination"), ManetMessage.DEFAULT_TTL,
+                        intent.getStringExtra("body"));
+                saveMessage(message, status, message.getSource().equalsIgnoreCase(nodeIdInput.getText().toString().trim()));
+            } else {
+                databaseExecutor.execute(() -> { messageDao.updateStatus(id, status); loadMessages(); });
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -138,6 +154,8 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 discoveryReceiver,
                 new IntentFilter(BluetoothDevice.ACTION_FOUND),
                 ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, meshEventReceiver,
+                new IntentFilter(MeshService.ACTION_MESSAGE_EVENT), ContextCompat.RECEIVER_NOT_EXPORTED);
         ContextCompat.registerReceiver(
                 this,
                 discoveryReceiver,
@@ -197,7 +215,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         updateButton.setOnClickListener(v -> openGithubUpdate());
         sendButton.setOnClickListener(v -> {
             syncNodeId();
-            boolean sent = meshManager.sendNewMessage(destinationInput.getText().toString(), messageInput.getText().toString());
+            boolean sent = MeshService.sendMessage(this, destinationInput.getText().toString(), messageInput.getText().toString());
             if (sent) {
                 Toast.makeText(this, "Message sent into the mesh.", Toast.LENGTH_SHORT).show();
                 messageInput.setText("");
@@ -478,6 +496,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     protected void onDestroy() {
         super.onDestroy();
         unregisterReceiver(discoveryReceiver);
+        unregisterReceiver(meshEventReceiver);
         meshManager.stop();
         databaseExecutor.shutdown();
     }

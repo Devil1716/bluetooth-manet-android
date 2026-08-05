@@ -20,6 +20,8 @@ import java.util.List;
 
 public class MeshService extends Service implements BluetoothMeshManager.Listener {
     private static final String CHANNEL = "mesh_service";
+    public static final String ACTION_MESSAGE_EVENT = "com.devil1716.bluetoothmanet.MESSAGE_EVENT";
+    private static volatile BluetoothMeshManager activeManager;
     private final Handler handler = new Handler();
     private BluetoothMeshManager manager;
     private BleMeshAdvertiser advertiser;
@@ -37,6 +39,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         createChannel();
         startForeground(42, notification(0));
         manager = new BluetoothMeshManager(this, this);
+        activeManager = manager;
         database = AppDatabase.getInstance(this);
         advertiser = new BleMeshAdvertiser(this);
         manager.setMyNodeId(nodeId);
@@ -49,7 +52,20 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             nodeId = intent.getStringExtra("node_id").trim().toUpperCase();
             if (manager != null) manager.setMyNodeId(nodeId);
         }
+        if (intent != null && intent.hasExtra("send_destination") && manager != null) {
+            manager.sendNewMessage(intent.getStringExtra("send_destination"), intent.getStringExtra("send_body"));
+        }
         return START_STICKY;
+    }
+
+    public static boolean sendMessage(android.content.Context context, String destination, String body) {
+        BluetoothMeshManager current = activeManager;
+        if (current != null) return current.sendNewMessage(destination, body);
+        Intent intent = new Intent(context, MeshService.class)
+                .putExtra("send_destination", destination).putExtra("send_body", body);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
+        else context.startService(intent);
+        return true;
     }
     private void connectBondedPeers() {
         if (manager == null || Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this,
@@ -71,7 +87,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager.class).createNotificationChannel(
                 new NotificationChannel(CHANNEL, "MANET mesh", NotificationManager.IMPORTANCE_LOW));
     }
-    @Override public void onDestroy() { handler.removeCallbacksAndMessages(null); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
+    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onLog(String message) { }
     @Override public void onConnectionsChanged(List<String> peers) { startForeground(42, notification(peers == null ? 0 : peers.size())); }
@@ -80,6 +96,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         String conversation = sentByMe ? message.getDestination() : message.getSource();
         database.messageDao().insert(new ChatMessageEntity(message.getId(), conversation, message.getData(),
                 message.getSource(), System.currentTimeMillis(), MessageStatus.DELIVERED, sentByMe));
+        broadcastMessageEvent(message, MessageStatus.DELIVERED);
     }
     @Override public void onMessageStatusChanged(ManetMessage message, MessageStatus status) {
         if (status == MessageStatus.SENDING) {
@@ -88,8 +105,18 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         } else {
             database.messageDao().updateStatus(message.getId(), status);
         }
+        broadcastMessageEvent(message, status);
     }
     @Override public void onMessageAcknowledged(String messageId) {
         database.messageDao().updateStatus(messageId, MessageStatus.DELIVERED);
+        sendBroadcast(new Intent(ACTION_MESSAGE_EVENT).setPackage(getPackageName())
+                .putExtra("message_id", messageId).putExtra("status", MessageStatus.DELIVERED.name()));
+    }
+
+    private void broadcastMessageEvent(ManetMessage message, MessageStatus status) {
+        sendBroadcast(new Intent(ACTION_MESSAGE_EVENT).setPackage(getPackageName())
+                .putExtra("message_id", message.getId()).putExtra("source", message.getSource())
+                .putExtra("destination", message.getDestination()).putExtra("body", message.getData())
+                .putExtra("status", status.name()));
     }
 }
