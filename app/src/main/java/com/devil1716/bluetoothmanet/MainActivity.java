@@ -24,6 +24,8 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -38,6 +40,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity implements BluetoothMeshManager.Listener {
     private static final String LATEST_RELEASE_API =
@@ -55,6 +59,9 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private EditText nodeIdInput;
     private EditText destinationInput;
     private EditText messageInput;
+    private ChatAdapter chatAdapter;
+    private MessageDao messageDao;
+    private final ExecutorService databaseExecutor = Executors.newSingleThreadExecutor();
     private boolean pendingDiscovery;
     private boolean pendingListening;
 
@@ -123,6 +130,9 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         }
 
         bindViews();
+        messageDao = AppDatabase.getInstance(this).messageDao();
+        loadMessages();
+        startMeshService();
         ContextCompat.registerReceiver(
                 this,
                 discoveryReceiver,
@@ -145,13 +155,15 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
 
     private void bindViews() {
         logView = findViewById(R.id.logView);
-        inboxView = findViewById(R.id.inboxView);
         connectionView = findViewById(R.id.connectionView);
         nodeIdInput = findViewById(R.id.nodeIdInput);
         destinationInput = findViewById(R.id.destinationInput);
         messageInput = findViewById(R.id.messageInput);
         logView.setMovementMethod(new ScrollingMovementMethod());
-        inboxView.setMovementMethod(new ScrollingMovementMethod());
+        RecyclerView chatRecyclerView = findViewById(R.id.chatRecyclerView);
+        chatAdapter = new ChatAdapter();
+        chatRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        chatRecyclerView.setAdapter(chatAdapter);
         syncNodeId();
 
         Spinner peerSpinner = findViewById(R.id.peerSpinner);
@@ -381,6 +393,33 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         runOnUiThread(() -> logView.append(message + "\n"));
     }
 
+    private void loadMessages() {
+        databaseExecutor.execute(() -> {
+            List<ChatMessageEntity> messages = messageDao.getAll();
+            runOnUiThread(() -> chatAdapter.setMessages(messages));
+        });
+    }
+
+    private void startMeshService() {
+        Intent serviceIntent = new Intent(this, MeshService.class);
+        serviceIntent.putExtra("node_id", nodeIdInput.getText().toString().trim());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ContextCompat.startForegroundService(this, serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+    }
+
+    private void saveMessage(ManetMessage message, MessageStatus status, boolean sentByMe) {
+        String conversation = sentByMe ? message.getDestination() : message.getSource();
+        ChatMessageEntity entity = new ChatMessageEntity(message.getId(), conversation,
+                message.getData(), message.getSource(), System.currentTimeMillis(), status, sentByMe);
+        databaseExecutor.execute(() -> {
+            messageDao.insert(entity);
+            loadMessages();
+        });
+    }
+
     private void syncNodeId() {
         meshManager.setMyNodeId(nodeIdInput.getText().toString());
     }
@@ -410,11 +449,28 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     @Override
     public void onMessageDelivered(ManetMessage message) {
         appendLog("Delivered to " + message.getDestination() + ": " + message.getData());
-        runOnUiThread(() -> {
-            if (getString(R.string.no_messages_yet).contentEquals(inboxView.getText())) {
-                inboxView.setText("");
-            }
-            inboxView.append(message.getSource() + " -> " + message.getDestination() + ": " + message.getData() + "\n");
+        boolean sentByMe = nodeIdInput != null
+                && message.getSource().equalsIgnoreCase(nodeIdInput.getText().toString().trim());
+        saveMessage(message, MessageStatus.DELIVERED, sentByMe);
+    }
+
+    @Override
+    public void onMessageStatusChanged(ManetMessage message, MessageStatus status) {
+        if (status == MessageStatus.SENDING) {
+            saveMessage(message, status, true);
+        } else {
+            databaseExecutor.execute(() -> {
+                messageDao.updateStatus(message.getId(), status);
+                loadMessages();
+            });
+        }
+    }
+
+    @Override
+    public void onMessageAcknowledged(String messageId) {
+        databaseExecutor.execute(() -> {
+            messageDao.updateStatus(messageId, MessageStatus.DELIVERED);
+            loadMessages();
         });
     }
 
@@ -423,6 +479,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         super.onDestroy();
         unregisterReceiver(discoveryReceiver);
         meshManager.stop();
+        databaseExecutor.shutdown();
     }
 
     private String joinPeers(List<String> peers) {
