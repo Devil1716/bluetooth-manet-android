@@ -33,9 +33,16 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private String nodeId = "NODE";
     private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
-            if (!BluetoothDevice.ACTION_FOUND.equals(intent.getAction())) return;
-            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-            if (device != null) manager.connectToDevice(device);
+            String action = intent.getAction();
+            if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                if (device != null) manager.connectToDevice(device);
+            } else if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)
+                    && intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                    == BluetoothDevice.BOND_BONDED) {
+                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                if (device != null) manager.connectToDevice(device);
+            }
         }
     };
     private final Runnable discoveryCycle = new Runnable() {
@@ -58,8 +65,9 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         manager = new BluetoothMeshManager(this, this);
         activeManager = manager;
         database = AppDatabase.getInstance(this);
-        ContextCompat.registerReceiver(this, discoveryReceiver, new IntentFilter(BluetoothDevice.ACTION_FOUND),
-                ContextCompat.RECEIVER_NOT_EXPORTED);
+        IntentFilter peerFilter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+        peerFilter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        ContextCompat.registerReceiver(this, discoveryReceiver, peerFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
         advertiser = new BleMeshAdvertiser(this);
         manager.setMyNodeId(nodeId);
         ensureTransportReady();
@@ -152,7 +160,11 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); unregisterReceiver(discoveryReceiver); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onLog(String message) { status(message); }
-    @Override public void onConnectionsChanged(List<String> peers) { startForeground(42, notification(peers == null ? 0 : peers.size())); }
+    @Override public void onConnectionsChanged(List<String> peers) {
+        int count = peers == null ? 0 : peers.size();
+        startForeground(42, notification(count));
+        status(count == 0 ? "No connected peers." : "Connected peers: " + String.join(", ", peers));
+    }
     @Override public void onMessageDelivered(ManetMessage message) {
         boolean sentByMe = message.getSource().equalsIgnoreCase(nodeId);
         String conversation = sentByMe ? message.getDestination() : message.getSource();

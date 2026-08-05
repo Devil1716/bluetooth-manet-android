@@ -87,7 +87,12 @@ public class BluetoothMeshManager {
         accepting = true;
         executor.execute(() -> {
             try {
-                serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
+                try {
+                    serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
+                } catch (IOException secureFailure) {
+                    listener.onLog("Secure RFCOMM listener failed; trying insecure listener: " + secureFailure.getMessage());
+                    serverSocket = adapter.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
+                }
                 listener.onLog("Listening for MANET peers...");
                 while (accepting) {
                     BluetoothSocket socket = serverSocket.accept();
@@ -130,11 +135,35 @@ public class BluetoothMeshManager {
                 if (adapter.isDiscovering() && hasScanPermission()) {
                     adapter.cancelDiscovery();
                 }
-                socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
+                if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+                    listener.onLog("Requesting pairing with " + safeDeviceLabel(device) + "...");
+                    if (device.createBond()) {
+                        listener.onLog("Pairing requested. The peer must accept the Android pairing prompt.");
+                    } else {
+                        listener.onLog("Could not request pairing with " + safeDeviceLabel(device));
+                    }
+                    return;
+                }
                 listener.onLog("Connecting to " + safeDeviceLabel(device) + "...");
-                socket.connect();
+                try {
+                    socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
+                    socket.connect();
+                } catch (IOException secureFailure) {
+                    closeSocket(socket);
+                    listener.onLog("Secure RFCOMM connect failed; trying insecure RFCOMM...");
+                    socket = device.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID);
+                    try {
+                        socket.connect();
+                    } catch (IOException insecureFailure) {
+                        closeSocket(socket);
+                        listener.onLog("Insecure RFCOMM connect failed; trying channel fallback...");
+                        java.lang.reflect.Method method = BluetoothDevice.class.getMethod("createRfcommSocket", int.class);
+                        socket = (BluetoothSocket) method.invoke(device, 1);
+                        socket.connect();
+                    }
+                }
                 registerSocket(socket, "Connected");
-            } catch (IOException e) {
+            } catch (Exception e) {
                 listener.onLog("Connection failed for " + safeDeviceLabel(device) + ": " + e.getMessage());
                 closeSocket(socket);
             } finally {
