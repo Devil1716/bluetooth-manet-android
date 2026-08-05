@@ -6,7 +6,7 @@ import java.util.UUID;
 
 public class ManetMessage {
     public static final int DEFAULT_TTL = 3;
-    public enum Type { MSG, ACK }
+    public enum Type { MSG, ACK, HELLO }
 
     private final Type type;
     private final String id;
@@ -57,6 +57,10 @@ public class ManetMessage {
     public static ManetMessage ack(String source, String destination, String originalId) {
         return new ManetMessage(Type.ACK, UUID.randomUUID().toString(), source, destination,
                 DEFAULT_TTL, originalId);
+    }
+
+    public static ManetMessage hello(String source) {
+        return new ManetMessage(Type.HELLO, UUID.randomUUID().toString(), source, "*", 1, source);
     }
 
     public Type getType() { return type; }

@@ -42,6 +42,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity implements BluetoothMeshManager.Listener {
     private static final String LATEST_RELEASE_API =
@@ -59,11 +61,31 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private EditText nodeIdInput;
     private EditText destinationInput;
     private EditText messageInput;
+    private TextView fileProgressView;
     private ChatAdapter chatAdapter;
     private MessageDao messageDao;
     private final ExecutorService databaseExecutor = Executors.newSingleThreadExecutor();
     private boolean pendingDiscovery;
     private boolean pendingListening;
+
+    private final ActivityResultLauncher<String> filePickerLauncher =
+            registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
+                if (uri == null) return;
+                databaseExecutor.execute(() -> {
+                    try (InputStream input = getContentResolver().openInputStream(uri)) {
+                        if (input == null) throw new IllegalStateException("Could not open file");
+                        ByteArrayOutputStream output = new ByteArrayOutputStream();
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+                        String name = uri.getLastPathSegment() == null ? "shared-file" : uri.getLastPathSegment();
+                        boolean sent = MeshService.sendFile(destinationInput.getText().toString(), name, output.toByteArray());
+                        runOnUiThread(() -> fileProgressView.setText(sent ? "File transfer started: " + name : "File transfer failed: no mesh connection."));
+                    } catch (Exception e) {
+                        runOnUiThread(() -> fileProgressView.setText("File error: " + e.getMessage()));
+                    }
+                });
+            });
 
     private final ActivityResultLauncher<Intent> enableBluetoothLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -72,6 +94,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 if (adapter != null && adapter.isEnabled()) {
                     preloadBondedDevices();
                     resumePendingActions();
+                    startMeshService();
                 }
             });
 
@@ -93,6 +116,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 if (allGranted) {
                     preloadBondedDevices();
                     resumePendingActions();
+                    startMeshService();
                 }
             });
 
@@ -133,6 +157,17 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         }
     };
 
+    private final BroadcastReceiver meshStatusReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            String message = intent.getStringExtra("message");
+            if (message != null) appendLog("Mesh: " + message);
+            if (intent.hasExtra("file_total")) {
+                fileProgressView.setText("File " + intent.getStringExtra("file_name") + ": "
+                        + intent.getIntExtra("file_completed", 0) + "/" + intent.getIntExtra("file_total", 0));
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -156,6 +191,8 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 ContextCompat.RECEIVER_NOT_EXPORTED);
         ContextCompat.registerReceiver(this, meshEventReceiver,
                 new IntentFilter(MeshService.ACTION_MESSAGE_EVENT), ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, meshStatusReceiver,
+                new IntentFilter(MeshService.ACTION_MESH_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED);
         ContextCompat.registerReceiver(
                 this,
                 discoveryReceiver,
@@ -177,6 +214,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         nodeIdInput = findViewById(R.id.nodeIdInput);
         destinationInput = findViewById(R.id.destinationInput);
         messageInput = findViewById(R.id.messageInput);
+        fileProgressView = findViewById(R.id.fileProgressView);
         logView.setMovementMethod(new ScrollingMovementMethod());
         RecyclerView chatRecyclerView = findViewById(R.id.chatRecyclerView);
         chatAdapter = new ChatAdapter();
@@ -198,7 +236,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             }
             BluetoothAdapter adapter = meshManager.getAdapter();
             BluetoothDevice device = adapter.getRemoteDevice(peer.getAddress());
-            meshManager.connectToDevice(device);
+            MeshService.connectToAddress(this, peer.getAddress());
         });
 
         Button enableButton = findViewById(R.id.enableBluetoothButton);
@@ -207,6 +245,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         Button listenButton = findViewById(R.id.startListeningButton);
         Button updateButton = findViewById(R.id.updateFromGithubButton);
         Button sendButton = findViewById(R.id.sendButton);
+        Button sendFileButton = findViewById(R.id.sendFileButton);
 
         enableButton.setOnClickListener(v -> ensureBluetoothEnabled());
         discoverableButton.setOnClickListener(v -> requestDiscoverableMode());
@@ -223,6 +262,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 Toast.makeText(this, "Message was not sent. Check the event log.", Toast.LENGTH_SHORT).show();
             }
         });
+        sendFileButton.setOnClickListener(v -> filePickerLauncher.launch("*/*"));
     }
 
     private void requestNeededPermissions() {
@@ -231,6 +271,9 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             maybeAddPermission(permissions, Manifest.permission.BLUETOOTH_CONNECT);
             maybeAddPermission(permissions, Manifest.permission.BLUETOOTH_SCAN);
             maybeAddPermission(permissions, Manifest.permission.BLUETOOTH_ADVERTISE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                maybeAddPermission(permissions, Manifest.permission.POST_NOTIFICATIONS);
+            }
         } else {
             maybeAddPermission(permissions, Manifest.permission.ACCESS_FINE_LOCATION);
         }
@@ -497,6 +540,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         super.onDestroy();
         unregisterReceiver(discoveryReceiver);
         unregisterReceiver(meshEventReceiver);
+        unregisterReceiver(meshStatusReceiver);
         meshManager.stop();
         databaseExecutor.shutdown();
     }

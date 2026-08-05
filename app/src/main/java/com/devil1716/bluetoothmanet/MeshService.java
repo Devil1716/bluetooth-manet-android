@@ -7,6 +7,9 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -21,12 +24,26 @@ import java.util.List;
 public class MeshService extends Service implements BluetoothMeshManager.Listener {
     private static final String CHANNEL = "mesh_service";
     public static final String ACTION_MESSAGE_EVENT = "com.devil1716.bluetoothmanet.MESSAGE_EVENT";
+    public static final String ACTION_MESH_STATUS = "com.devil1716.bluetoothmanet.MESH_STATUS";
     private static volatile BluetoothMeshManager activeManager;
     private final Handler handler = new Handler();
     private BluetoothMeshManager manager;
     private BleMeshAdvertiser advertiser;
     private AppDatabase database;
     private String nodeId = "NODE";
+    private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (!BluetoothDevice.ACTION_FOUND.equals(intent.getAction())) return;
+            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (device != null) manager.connectToDevice(device);
+        }
+    };
+    private final Runnable discoveryCycle = new Runnable() {
+        @Override public void run() {
+            startNearbyDiscovery();
+            handler.postDelayed(this, 60_000L);
+        }
+    };
     private final Runnable connector = new Runnable() {
         @Override public void run() {
             connectBondedPeers();
@@ -41,11 +58,13 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         manager = new BluetoothMeshManager(this, this);
         activeManager = manager;
         database = AppDatabase.getInstance(this);
+        ContextCompat.registerReceiver(this, discoveryReceiver, new IntentFilter(BluetoothDevice.ACTION_FOUND),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
         advertiser = new BleMeshAdvertiser(this);
         manager.setMyNodeId(nodeId);
-        manager.startAccepting();
-        advertiser.start(nodeId);
+        ensureTransportReady();
         handler.post(connector);
+        handler.post(discoveryCycle);
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getStringExtra("node_id") != null) {
@@ -55,6 +74,11 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (intent != null && intent.hasExtra("send_destination") && manager != null) {
             manager.sendNewMessage(intent.getStringExtra("send_destination"), intent.getStringExtra("send_body"));
         }
+        if (intent != null && intent.hasExtra("connect_address") && manager != null
+                && manager.getAdapter() != null) {
+            manager.connectToDevice(manager.getAdapter().getRemoteDevice(intent.getStringExtra("connect_address")));
+        }
+        ensureTransportReady();
         return START_STICKY;
     }
 
@@ -67,15 +91,53 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         else context.startService(intent);
         return true;
     }
+
+    public static void connectToAddress(android.content.Context context, String address) {
+        Intent intent = new Intent(context, MeshService.class).putExtra("connect_address", address);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
+        else context.startService(intent);
+    }
+
+    public static boolean sendFile(String destination, String fileName, byte[] contents) {
+        BluetoothMeshManager current = activeManager;
+        return current != null && current.sendFile(destination, fileName, contents);
+    }
     private void connectBondedPeers() {
+        ensureTransportReady();
         if (manager == null || Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this,
-                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return;
+                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            status("Bluetooth Connect permission is required for automatic peer connections.");
+            return;
+        }
         BluetoothAdapter adapter = manager.getAdapter();
         if (adapter == null || !adapter.isEnabled()) return;
         for (BluetoothDevice device : adapter.getBondedDevices()) {
             if (!manager.isConnected(device.getAddress())) manager.connectToDevice(device);
         }
+        if (adapter.getBondedDevices().isEmpty()) status("No bonded peers. Pair devices in Android Bluetooth settings first.");
         updateNotification();
+    }
+
+    @SuppressWarnings("MissingPermission")
+    private void startNearbyDiscovery() {
+        if (manager == null || Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this,
+                Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) return;
+        if (Build.VERSION.SDK_INT < 31 && ContextCompat.checkSelfPermission(this,
+                Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return;
+        BluetoothAdapter adapter = manager.getAdapter();
+        if (adapter != null && adapter.isEnabled() && !adapter.isDiscovering()) {
+            status(adapter.startDiscovery() ? "Scanning for nearby Bluetooth peers..." : "Bluetooth discovery could not start.");
+        }
+    }
+    private void ensureTransportReady() {
+        if (manager == null) return;
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED) return;
+        BluetoothAdapter adapter = manager.getAdapter();
+        if (adapter == null || !adapter.isEnabled()) { status("Bluetooth is disabled."); return; }
+        manager.startAccepting();
+        if (Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
+                == PackageManager.PERMISSION_GRANTED) advertiser.start(nodeId);
     }
     private Notification notification(int count) {
         return new NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
@@ -87,9 +149,9 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager.class).createNotificationChannel(
                 new NotificationChannel(CHANNEL, "MANET mesh", NotificationManager.IMPORTANCE_LOW));
     }
-    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
+    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); unregisterReceiver(discoveryReceiver); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
-    @Override public void onLog(String message) { }
+    @Override public void onLog(String message) { status(message); }
     @Override public void onConnectionsChanged(List<String> peers) { startForeground(42, notification(peers == null ? 0 : peers.size())); }
     @Override public void onMessageDelivered(ManetMessage message) {
         boolean sentByMe = message.getSource().equalsIgnoreCase(nodeId);
@@ -113,10 +175,20 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
                 .putExtra("message_id", messageId).putExtra("status", MessageStatus.DELIVERED.name()));
     }
 
+    @Override public void onFileProgress(String transferId, int completed, int total, String fileName) {
+        sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName())
+                .putExtra("file_id", transferId).putExtra("file_completed", completed)
+                .putExtra("file_total", total).putExtra("file_name", fileName));
+    }
+
     private void broadcastMessageEvent(ManetMessage message, MessageStatus status) {
         sendBroadcast(new Intent(ACTION_MESSAGE_EVENT).setPackage(getPackageName())
                 .putExtra("message_id", message.getId()).putExtra("source", message.getSource())
                 .putExtra("destination", message.getDestination()).putExtra("body", message.getData())
                 .putExtra("status", status.name()));
+    }
+
+    private void status(String message) {
+        sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName()).putExtra("message", message));
     }
 }

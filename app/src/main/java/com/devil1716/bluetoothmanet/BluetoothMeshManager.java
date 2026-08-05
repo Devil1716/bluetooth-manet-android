@@ -46,6 +46,8 @@ public class BluetoothMeshManager {
     private final BluetoothAdapter adapter;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ConcurrentHashMap<String, BluetoothSocket> sockets = new ConcurrentHashMap<>();
+    private final Set<String> connectingAddresses = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, String> peerNodeIds = new ConcurrentHashMap<>();
     private final Map<String, Long> seenMessages = new LinkedHashMap<>(256, .75f, true);
     private final Set<String> seenFileChunks = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, FileTransferBuffer> fileBuffers = new ConcurrentHashMap<>();
@@ -111,13 +113,15 @@ public class BluetoothMeshManager {
             closeSocket(socket);
         }
         sockets.clear();
+        connectingAddresses.clear();
+        peerNodeIds.clear();
         publishConnections();
         executor.shutdownNow();
     }
 
     @SuppressLint("MissingPermission")
     public void connectToDevice(BluetoothDevice device) {
-        if (device == null || !hasConnectPermission()) {
+        if (device == null || !hasConnectPermission() || !connectingAddresses.add(device.getAddress())) {
             return;
         }
         executor.execute(() -> {
@@ -133,6 +137,8 @@ public class BluetoothMeshManager {
             } catch (IOException e) {
                 listener.onLog("Connection failed for " + safeDeviceLabel(device) + ": " + e.getMessage());
                 closeSocket(socket);
+            } finally {
+                connectingAddresses.remove(device.getAddress());
             }
         });
     }
@@ -172,6 +178,7 @@ public class BluetoothMeshManager {
         }
         listener.onLog(label + " peer " + safeDeviceLabel(device));
         publishConnections();
+        sendHello(socket);
         flushPending();
         startReaderLoop(socket);
     }
@@ -208,6 +215,12 @@ public class BluetoothMeshManager {
 
             listener.onLog("RX " + message.getSource() + " -> " + message.getDestination()
                     + " (ttl=" + message.getTtl() + ")");
+
+            if (message.getType() == ManetMessage.Type.HELLO) {
+                peerNodeIds.put(fromAddress, message.getData());
+                listener.onLog("Peer " + fromAddress + " is node " + message.getData());
+                return;
+            }
 
             if (message.getType() == ManetMessage.Type.ACK) {
                 if (message.getDestination().equalsIgnoreCase(myNodeId)) {
@@ -262,6 +275,15 @@ public class BluetoothMeshManager {
         listener.onLog("Stored " + message.getId() + " for offline destination " + message.getDestination());
     }
 
+    private void sendHello(BluetoothSocket socket) {
+        try {
+            socket.getOutputStream().write(ManetMessage.hello(myNodeId).toBytes());
+            socket.getOutputStream().flush();
+        } catch (IOException e) {
+            listener.onLog("Could not send node handshake: " + e.getMessage());
+        }
+    }
+
     private void flushPending() {
         executor.execute(() -> {
             long cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L;
@@ -312,10 +334,12 @@ public class BluetoothMeshManager {
                 for (int i = 0; i < packet.total; i++) output.write(buffer.chunks.get(i));
                 java.io.File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
                 if (!downloads.exists()) downloads.mkdirs();
-                java.nio.file.Files.write(new java.io.File(downloads, packet.fileName).toPath(), output.toByteArray());
+                java.io.FileOutputStream fileOutput = new java.io.FileOutputStream(new java.io.File(downloads, packet.fileName));
+                fileOutput.write(output.toByteArray());
+                fileOutput.close();
                 fileBuffers.remove(packet.id);
             } catch (IOException e) { listener.onLog("File save failed: " + e.getMessage()); }
-        } else if (packet.ttl > 1) {
+        } else if (!packet.destination.equalsIgnoreCase(myNodeId) && packet.ttl > 1) {
             forwardBytes(packet.toWire().replace("|" + packet.ttl + "|", "|" + (packet.ttl - 1) + "|").getBytes(StandardCharsets.UTF_8), fromAddress);
         }
     }
