@@ -31,6 +31,8 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private BleMeshAdvertiser advertiser;
     private BleMeshScanner scanner;
     private AppDatabase database;
+    private boolean receiverRegistered;
+    private boolean foregroundReady;
     private String nodeId = "NODE";
     private final BroadcastReceiver discoveryReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -62,13 +64,21 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     @Override public void onCreate() {
         super.onCreate();
         createChannel();
-        startForeground(42, notification(0));
+        try {
+            startForeground(42, notification(0));
+            foregroundReady = true;
+        } catch (SecurityException securityException) {
+            foregroundReady = false;
+            stopSelf();
+            return;
+        }
         manager = new BluetoothMeshManager(this, this);
         activeManager = manager;
         database = AppDatabase.getInstance(this);
         IntentFilter peerFilter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
         peerFilter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
         ContextCompat.registerReceiver(this, discoveryReceiver, peerFilter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        receiverRegistered = true;
         advertiser = new BleMeshAdvertiser(this);
         scanner = new BleMeshScanner(this, this);
         manager.setMyNodeId(nodeId);
@@ -77,6 +87,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         handler.post(discoveryCycle);
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!foregroundReady) return START_NOT_STICKY;
         if (intent != null && intent.getStringExtra("node_id") != null) {
             nodeId = intent.getStringExtra("node_id").trim().toUpperCase();
             if (manager != null) manager.setMyNodeId(nodeId);
@@ -93,6 +104,8 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     }
 
     public static boolean sendMessage(android.content.Context context, String destination, String body) {
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
+                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return false;
         BluetoothMeshManager current = activeManager;
         if (current != null) return current.sendNewMessage(destination, body);
         Intent intent = new Intent(context, MeshService.class)
@@ -103,6 +116,8 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     }
 
     public static void connectToAddress(android.content.Context context, String address) {
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
+                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return;
         Intent intent = new Intent(context, MeshService.class).putExtra("connect_address", address);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
         else context.startService(intent);
@@ -160,7 +175,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager.class).createNotificationChannel(
                 new NotificationChannel(CHANNEL, "MANET mesh", NotificationManager.IMPORTANCE_LOW));
     }
-    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); unregisterReceiver(discoveryReceiver); if (scanner != null) scanner.stop(); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
+    @Override public void onDestroy() { activeManager = null; handler.removeCallbacksAndMessages(null); if (receiverRegistered) unregisterReceiver(discoveryReceiver); if (scanner != null) scanner.stop(); if (advertiser != null) advertiser.stop(); if (manager != null) manager.stop(); super.onDestroy(); }
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onLog(String message) { status(message); }
     @Override public void onConnectionsChanged(List<String> peers) {

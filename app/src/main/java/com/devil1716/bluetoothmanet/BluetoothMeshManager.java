@@ -46,10 +46,10 @@ public class BluetoothMeshManager {
     private final BluetoothAdapter adapter;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ConcurrentHashMap<String, BluetoothSocket> sockets = new ConcurrentHashMap<>();
-    private final Set<String> connectingAddresses = ConcurrentHashMap.newKeySet();
+    private final Set<String> connectingAddresses = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final ConcurrentHashMap<String, String> peerNodeIds = new ConcurrentHashMap<>();
     private final Map<String, Long> seenMessages = new LinkedHashMap<>(256, .75f, true);
-    private final Set<String> seenFileChunks = ConcurrentHashMap.newKeySet();
+    private final Set<String> seenFileChunks = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final ConcurrentHashMap<String, FileTransferBuffer> fileBuffers = new ConcurrentHashMap<>();
     private final AppDatabase database;
     private static final long SEEN_TTL_MS = 10 * 60 * 1000L;
@@ -290,7 +290,10 @@ public class BluetoothMeshManager {
     private boolean markSeen(String id) {
         synchronized (seenMessages) {
             long now = System.currentTimeMillis();
-            seenMessages.entrySet().removeIf(entry -> now - entry.getValue() > SEEN_TTL_MS);
+            java.util.Iterator<Map.Entry<String, Long>> iterator = seenMessages.entrySet().iterator();
+            while (iterator.hasNext()) {
+                if (now - iterator.next().getValue() > SEEN_TTL_MS) iterator.remove();
+            }
             if (seenMessages.containsKey(id)) return false;
             seenMessages.put(id, now);
             while (seenMessages.size() > 1000) seenMessages.remove(seenMessages.keySet().iterator().next());
@@ -354,7 +357,12 @@ public class BluetoothMeshManager {
 
     private void handleFilePacket(FilePacket packet, String fromAddress) {
         if (!seenFileChunks.add(packet.id + ":" + packet.index)) return;
-        FileTransferBuffer buffer = fileBuffers.computeIfAbsent(packet.id, id -> new FileTransferBuffer(packet));
+        FileTransferBuffer buffer = fileBuffers.get(packet.id);
+        if (buffer == null) {
+            FileTransferBuffer newBuffer = new FileTransferBuffer(packet);
+            FileTransferBuffer existing = fileBuffers.putIfAbsent(packet.id, newBuffer);
+            buffer = existing == null ? newBuffer : existing;
+        }
         buffer.chunks.put(packet.index, android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT));
         listener.onFileProgress(packet.id, buffer.chunks.size(), packet.total, packet.fileName);
         if (buffer.chunks.size() == packet.total && packet.destination.equalsIgnoreCase(myNodeId)) {

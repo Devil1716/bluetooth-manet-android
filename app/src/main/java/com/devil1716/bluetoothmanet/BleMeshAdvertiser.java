@@ -17,6 +17,7 @@ public class BleMeshAdvertiser {
     public static final UUID SERVICE_UUID = UUID.fromString("12345678-1234-1234-1234-123456789abd");
     private final Context context;
     private BluetoothLeAdvertiser advertiser;
+    private AdvertiseCallback callback;
     public BleMeshAdvertiser(Context context) { this.context = context.getApplicationContext(); }
     public void start(String nodeId) {
         if (android.os.Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
@@ -29,7 +30,15 @@ public class BleMeshAdvertiser {
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).setConnectable(false).build();
         AdvertiseData data = new AdvertiseData.Builder().addServiceUuid(new ParcelUuid(SERVICE_UUID))
                 .addServiceData(new ParcelUuid(SERVICE_UUID), nodeId.getBytes(StandardCharsets.UTF_8)).setIncludeDeviceName(false).build();
-        advertiser.startAdvertising(settings, data, new AdvertiseCallback() {});
+        callback = new AdvertiseCallback() {};
+        advertiser.startAdvertising(settings, data, callback);
     }
-    public void stop() { if (advertiser != null) advertiser.stopAdvertising(new AdvertiseCallback() {}); }
+    public void stop() {
+        if (advertiser != null && callback != null
+                && (android.os.Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(context,
+                Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED)) {
+            advertiser.stopAdvertising(callback);
+        }
+        callback = null;
+    }
 }

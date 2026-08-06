@@ -183,7 +183,6 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         bindViews();
         messageDao = AppDatabase.getInstance(this).messageDao();
         loadMessages();
-        startMeshService();
         ContextCompat.registerReceiver(
                 this,
                 discoveryReceiver,
@@ -276,10 +275,13 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             }
         } else {
             maybeAddPermission(permissions, Manifest.permission.ACCESS_FINE_LOCATION);
+            maybeAddPermission(permissions, Manifest.permission.ACCESS_COARSE_LOCATION);
         }
 
         if (!permissions.isEmpty()) {
             permissionLauncher.launch(permissions.toArray(new String[0]));
+        } else {
+            startMeshService();
         }
     }
 

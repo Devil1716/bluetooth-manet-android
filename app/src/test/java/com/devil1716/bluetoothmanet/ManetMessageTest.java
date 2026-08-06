@@ -27,4 +27,24 @@ public class ManetMessageTest {
         assertEquals(2, forwarded.getTtl());
         assertEquals("Hello", forwarded.getData());
     }
+
+    @Test
+    public void typedAckRoundTrips() {
+        ManetMessage ack = ManetMessage.ack("C", "A", "message-1");
+        ManetMessage parsed = ManetMessage.fromWire(ack.toWire());
+
+        assertEquals(ManetMessage.Type.ACK, parsed.getType());
+        assertEquals("C", parsed.getSource());
+        assertEquals("A", parsed.getDestination());
+        assertEquals("message-1", parsed.getData());
+    }
+
+    @Test
+    public void helloRoundTrips() {
+        ManetMessage hello = ManetMessage.hello("NODE-A");
+        ManetMessage parsed = ManetMessage.fromWire(hello.toWire());
+
+        assertEquals(ManetMessage.Type.HELLO, parsed.getType());
+        assertEquals("NODE-A", parsed.getData());
+    }
 }
