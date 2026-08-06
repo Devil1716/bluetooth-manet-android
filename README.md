@@ -16,7 +16,7 @@ Android Studio project for a simple Bluetooth-based MANET proof of concept in Ja
 - Language: Java
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.1.0`
+- Current release: `v1.2.5`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
@@ -50,3 +50,17 @@ Android Studio project for a simple Bluetooth-based MANET proof of concept in Ja
 ## Windows laptop node
 
 If you want the Windows laptop to join the same MANET, use the Python CLI in [windows-node](./windows-node).
+
+## Release notes
+
+### v1.0.3
+- Improved Bluetooth discovery/discoverable reliability by centralizing adapter and permission prechecks.
+- Added clearer logs for blocked Bluetooth operations (disabled adapter or missing runtime permissions).
+
+## Publishing a GitHub release
+
+If the app version is bumped but the GitHub "Releases" page still shows the old version, run the **Android Release** workflow manually:
+
+1. Open **Actions → Android Release → Run workflow**.
+2. Set `tag` to the version tag (example: `v1.0.3`).
+3. Run the workflow. It builds the APK and publishes/updates the GitHub release for that tag.

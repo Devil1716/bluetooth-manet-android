@@ -51,6 +51,10 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private static final String LATEST_RELEASE_PAGE =
             "https://github.com/Devil1716/bluetooth-manet-android/releases/latest";
 
+    private interface AdapterAction {
+        void run(BluetoothAdapter adapter);
+    }
+
     private final Map<String, PeerDevice> discoveredPeers = new LinkedHashMap<>();
 
     private BluetoothMeshManager meshManager;
@@ -183,6 +187,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         bindViews();
         messageDao = AppDatabase.getInstance(this).messageDao();
         loadMessages();
+        appendLog("Bluetooth MANET v" + BuildConfig.VERSION_NAME + " ready.");
         ContextCompat.registerReceiver(
                 this,
                 discoveryReceiver,
@@ -312,9 +317,15 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     }
 
     private void requestDiscoverableMode() {
-        Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
-        discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300);
-        discoverableLauncher.launch(discoverableIntent);
+        runWithBluetoothPreconditions(
+                "discoverable mode",
+                false,
+                true,
+                adapter -> {
+                    Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
+                    discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300);
+                    discoverableLauncher.launch(discoverableIntent);
+                });
     }
 
     private void openGithubUpdate() {
@@ -374,49 +385,65 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
 
     @SuppressLint("MissingPermission")
     private void startDiscovery() {
-        BluetoothAdapter adapter = meshManager.getAdapter();
-        if (adapter == null) {
-            return;
-        }
-        syncNodeId();
-        if (!adapter.isEnabled()) {
-            pendingDiscovery = true;
-            ensureBluetoothEnabledForAction();
-            return;
-        }
-        if (!hasScanPermission()) {
-            appendLog("Bluetooth scan permission missing.");
-            pendingDiscovery = true;
-            requestNeededPermissions();
-            return;
-        }
-        discoveredPeers.clear();
-        preloadBondedDevices();
-        if (adapter.isDiscovering()) {
-            adapter.cancelDiscovery();
-        }
-        boolean started = adapter.startDiscovery();
-        appendLog(started ? "Discovery request sent." : "Failed to start discovery. Check Bluetooth state and permissions.");
+        runWithBluetoothPreconditions("discovery", true, false, adapter -> {
+            discoveredPeers.clear();
+            preloadBondedDevices();
+            if (adapter.isDiscovering()) {
+                adapter.cancelDiscovery();
+            }
+            boolean started = adapter.startDiscovery();
+            if (started) {
+                appendLog("Discovery started...");
+            } else {
+                appendLog("Failed to start discovery. State="
+                        + adapter.getState()
+                        + ", scanPermission="
+                        + hasScanPermission()
+                        + ", connectPermission="
+                        + hasConnectPermission());
+            }
+        });
     }
 
-    private void startListening() {
+    private void runWithBluetoothPreconditions(
+            String operationLabel,
+            boolean requireScanPermission,
+            boolean requireAdvertisePermission,
+            AdapterAction action) {
         BluetoothAdapter adapter = meshManager.getAdapter();
         if (adapter == null) {
+            appendLog("Bluetooth adapter unavailable.");
             return;
         }
-        syncNodeId();
         if (!adapter.isEnabled()) {
-            pendingListening = true;
-            ensureBluetoothEnabledForAction();
+            appendLog("Bluetooth is OFF. Enable it before " + operationLabel + ".");
+            ensureBluetoothEnabled();
             return;
         }
         if (!hasConnectPermission()) {
-            appendLog("Bluetooth connect permission missing.");
-            pendingListening = true;
+            appendLog("Bluetooth connect permission missing. Requested permissions: " + getPermissionStateSummary());
             requestNeededPermissions();
             return;
         }
-        meshManager.startAccepting();
+        if (requireScanPermission && !hasScanPermission()) {
+            appendLog("Bluetooth scan permission missing. Requested permissions: " + getPermissionStateSummary());
+            requestNeededPermissions();
+            return;
+        }
+        if (requireAdvertisePermission && !hasAdvertisePermission()) {
+            appendLog("Bluetooth advertise permission missing. Requested permissions: " + getPermissionStateSummary());
+            requestNeededPermissions();
+            return;
+        }
+        action.run(adapter);
+    }
+
+    private void startListening() {
+        runWithBluetoothPreconditions("listening", false, false, adapter -> {
+            syncNodeId();
+            meshManager.startAccepting();
+            appendLog("MANET listener requested.");
+        });
     }
 
     @SuppressLint("MissingPermission")
@@ -450,6 +477,25 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.S
                 || ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
                 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean hasAdvertisePermission() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+                || ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private String getPermissionStateSummary() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return "BLUETOOTH_SCAN="
+                    + (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED)
+                    + ", BLUETOOTH_CONNECT="
+                    + (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                    + ", BLUETOOTH_ADVERTISE="
+                    + (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED);
+        }
+        return "ACCESS_FINE_LOCATION="
+                + (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED);
     }
 
     private void appendLog(String message) {
