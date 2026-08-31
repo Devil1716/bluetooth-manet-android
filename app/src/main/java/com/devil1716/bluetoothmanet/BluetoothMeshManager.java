@@ -9,10 +9,16 @@ import android.bluetooth.BluetoothSocket;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.core.content.ContextCompat;
 
+import com.devil1716.bluetoothmanet.crypto.MeshIntegrity;
+import com.devil1716.bluetoothmanet.crypto.PacketSigner;
+
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -51,7 +57,11 @@ public class BluetoothMeshManager {
     private final Set<String> seenFileChunks = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final ConcurrentHashMap<String, FileTransferBuffer> fileBuffers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> helloSeen = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> peerPublicKeys = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, OutgoingFile> outgoingFiles = new ConcurrentHashMap<>();
     private final AppDatabase database;
+    private final PacketSigner signer;
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private MeshLinkBridge extraLinks;
     private static final long SEEN_TTL_MS = 10 * 60 * 1000L;
 
@@ -64,6 +74,7 @@ public class BluetoothMeshManager {
         this.listener = listener;
         this.adapter = BluetoothAdapter.getDefaultAdapter();
         this.database = AppDatabase.getInstance(this.appContext);
+        this.signer = new PacketSigner(new File(this.appContext.getFilesDir(), "identity"));
     }
 
     public void setExtraLinks(MeshLinkBridge extraLinks) {
@@ -84,7 +95,7 @@ public class BluetoothMeshManager {
 
     public void broadcastHello() {
         if (!hasAnyPeers()) return;
-        forwardMessage(ManetMessage.hello(myNodeId), null);
+        forwardMessage(signedHello(), null);
     }
 
     public BluetoothAdapter getAdapter() {
@@ -210,7 +221,7 @@ public class BluetoothMeshManager {
             return false;
         }
 
-        ManetMessage message = ManetMessage.outbound(myNodeId, trimmedDestination, trimmedBody, ManetMessage.DEFAULT_TTL);
+        ManetMessage message = sign(ManetMessage.outbound(myNodeId, trimmedDestination, trimmedBody, ManetMessage.DEFAULT_TTL));
         listener.onMessageStatusChanged(message, MessageStatus.SENDING);
         markSeen(message.getId());
         if (trimmedDestination.equals(myNodeId)) {
@@ -264,7 +275,7 @@ public class BluetoothMeshManager {
 
     private void handleIncoming(String payload, String fromAddress) {
         try {
-            if (payload.startsWith("FILE|")) {
+            if (payload.startsWith("FILE")) {
                 handleFilePacket(FilePacket.fromWire(payload), fromAddress);
                 return;
             }
@@ -276,12 +287,18 @@ public class BluetoothMeshManager {
             if (!markSeen(message.getId())) {
                 return;
             }
+            AuthResult auth = authenticate(message);
+            if (auth == AuthResult.TAMPERED) {
+                listener.onLog("Rejected tampered " + message.getType() + " " + message.getId()
+                        + " from " + message.getSource());
+                return;
+            }
 
             listener.onLog("RX " + message.getSource() + " -> " + message.getDestination()
                     + " (ttl=" + message.getTtl() + ")");
 
             if (message.getType() == ManetMessage.Type.ACK) {
-                if (message.getDestination().equalsIgnoreCase(myNodeId)) {
+                if (message.getDestination().equalsIgnoreCase(myNodeId) && auth == AuthResult.OK) {
                     listener.onMessageAcknowledged(message.getData());
                     return;
                 }
@@ -291,12 +308,14 @@ public class BluetoothMeshManager {
 
             boolean broadcast = "ALL".equalsIgnoreCase(message.getDestination())
                     || "*".equals(message.getDestination());
-            if (message.getDestination().equalsIgnoreCase(myNodeId) || broadcast) {
+            if ((message.getDestination().equalsIgnoreCase(myNodeId) || broadcast) && auth == AuthResult.OK) {
                 listener.onMessageDelivered(message);
                 if (message.getDestination().equalsIgnoreCase(myNodeId)) {
-                    forwardMessage(ManetMessage.ack(myNodeId, message.getSource(), message.getId()), fromAddress);
+                    forwardMessage(sign(ManetMessage.ack(myNodeId, message.getSource(), message.getId())), fromAddress);
                     return;
                 }
+            } else if (message.getDestination().equalsIgnoreCase(myNodeId) && auth == AuthResult.UNKNOWN) {
+                listener.onLog("Ignored message from " + message.getSource() + " until its signing key is known.");
             }
 
             if (message.getTtl() <= 1) {
@@ -340,7 +359,7 @@ public class BluetoothMeshManager {
 
     private void sendHello(BluetoothSocket socket) {
         try {
-            socket.getOutputStream().write(ManetMessage.hello(myNodeId).toBytes());
+            socket.getOutputStream().write(signedHello().toBytes());
             socket.getOutputStream().flush();
         } catch (IOException e) {
             listener.onLog("Could not send node handshake: " + e.getMessage());
@@ -378,26 +397,45 @@ public class BluetoothMeshManager {
             listener.onLog("No active mesh peers. Files are sent over BLE or RFCOMM once a phone is linked.");
             return false;
         }
+        String safeName = fileName == null ? "file.bin" : fileName.replace("|", "_").replaceAll("[^a-zA-Z0-9._-]", "_");
         int total = (contents.length + FilePacket.CHUNK_SIZE - 1) / FilePacket.CHUNK_SIZE;
         String id = UUID.randomUUID().toString();
-        listener.onLog("Sending file " + fileName + " as " + total + " chunk(s) to " + trimmedDestination);
+        String fileSha = MeshIntegrity.sha256Hex(contents);
+        FilePacket meta = FilePacket.meta(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
+                safeName, total, contents.length, fileSha,
+                signer.sign(MeshIntegrity.fileMetaCanon(id, myNodeId, trimmedDestination, safeName, total, contents.length, fileSha)));
+        OutgoingFile outgoing = new OutgoingFile(meta);
+        forwardMessage(signedHello(), null);
+        listener.onLog("Sending signed file " + safeName + " (" + contents.length + " bytes, " + total + " chunks).");
         int delivered = 0;
+        if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
+        try { Thread.sleep(40); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
         for (int index = 0; index < total; index++) {
             int start = index * FilePacket.CHUNK_SIZE;
             int end = Math.min(contents.length, start + FilePacket.CHUNK_SIZE);
-            String data = android.util.Base64.encodeToString(java.util.Arrays.copyOfRange(contents, start, end), android.util.Base64.NO_WRAP);
-            FilePacket packet = new FilePacket(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
-                    fileName.replace("|", "_"), index, total, data);
+            byte[] chunk = java.util.Arrays.copyOfRange(contents, start, end);
+            String chunkSha = MeshIntegrity.sha256Hex(chunk);
+            String data = android.util.Base64.encodeToString(chunk, android.util.Base64.NO_WRAP);
+            FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, id, myNodeId, trimmedDestination,
+                    ManetMessage.DEFAULT_TTL, safeName, index, total, contents.length, chunkSha, data,
+                    signer.sign(MeshIntegrity.fileChunkCanon(id, myNodeId, trimmedDestination, index, total, chunkSha)));
+            outgoing.chunks.add(packet);
             if (forwardBytes(packet.toBytes(), null) > 0) delivered++;
-            listener.onFileProgress(id, index + 1, total, fileName);
+            listener.onFileProgress(id, index + 1, total, safeName);
             if (index < total - 1) {
-                try { Thread.sleep(20); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                try { Thread.sleep(35); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             }
         }
+        outgoingFiles.put(id, outgoing);
         boolean sent = delivered > 0;
         listener.onLog(sent
-                ? "File " + fileName + " queued on the mesh (" + delivered + "/" + total + " chunks)."
-                : "File " + fileName + " could not be written to any peer.");
+                ? "File " + safeName + " queued on the mesh with integrity checks."
+                : "File " + safeName + " could not be written to any peer.");
+        if (sent) {
+            listener.onMessageDelivered(new ManetMessage(id, myNodeId, trimmedDestination,
+                    ManetMessage.DEFAULT_TTL, "Sent file: " + safeName));
+        }
         return sent;
     }
 
@@ -413,11 +451,33 @@ public class BluetoothMeshManager {
     }
 
     private void handleHello(ManetMessage message, String fromAddress) {
-        String node = message.getData() == null ? message.getSource() : message.getData();
+        String data = message.getData() == null ? message.getSource() : message.getData();
+        String node = data;
+        String publicKey = null;
+        int separator = data.indexOf("::");
+        if (separator >= 0) {
+            node = data.substring(0, separator);
+            publicKey = data.substring(separator + 2);
+        }
+        if (publicKey != null) {
+            if (!message.hasSignature()
+                    || !signer.verify(message.canonical(), message.getSignature(), publicKey)) {
+                listener.onLog("Rejected tampered HELLO from " + fromAddress);
+                return;
+            }
+            peerPublicKeys.put(node.toUpperCase(), publicKey);
+            for (FileTransferBuffer pending : fileBuffers.values()) {
+                if (!pending.metaOk && pending.pendingMeta != null
+                        && node.equalsIgnoreCase(pending.pendingMeta.source)) {
+                    handleFileMeta(pending.pendingMeta, fromAddress);
+                }
+            }
+        }
         peerNodeIds.put(fromAddress, node);
-        listener.onLog("Peer " + fromAddress + " is node " + node);
+        listener.onLog("Peer " + fromAddress + " is node " + node + (publicKey != null ? " (key verified)" : ""));
+        final String storedNode = node;
         executor.execute(() -> database.meshStateDao().upsertNeighbor(new MeshNeighborEntity(
-                fromAddress, node, 0, null, null, 1, System.currentTimeMillis(), true)));
+                fromAddress, storedNode, 0, null, null, 1, System.currentTimeMillis(), true)));
         long now = System.currentTimeMillis();
         Long previous = helloSeen.put(node, now);
         if (previous != null && now - previous < 8_000L) return;
@@ -425,42 +485,202 @@ public class BluetoothMeshManager {
     }
 
     private void handleFilePacket(FilePacket packet, String fromAddress) {
-        if (!seenFileChunks.add(packet.id + ":" + packet.index)) return;
-        FileTransferBuffer buffer = fileBuffers.get(packet.id);
-        if (buffer == null) {
-            FileTransferBuffer newBuffer = new FileTransferBuffer(packet);
-            FileTransferBuffer existing = fileBuffers.putIfAbsent(packet.id, newBuffer);
-            buffer = existing == null ? newBuffer : existing;
+        if (packet.kind == FilePacket.Kind.REQ) {
+            handleFileRequest(packet, fromAddress);
+            return;
         }
-        buffer.chunks.put(packet.index, android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT));
-        listener.onFileProgress(packet.id, buffer.chunks.size(), packet.total, packet.fileName);
-        boolean complete = buffer.chunks.size() == packet.total;
-        if (complete && packet.isFor(myNodeId)) {
-            try {
-                java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
-                for (int i = 0; i < packet.total; i++) {
-                    byte[] chunk = buffer.chunks.get(i);
-                    if (chunk == null) return;
-                    output.write(chunk);
-                }
-                java.io.File saved = MeshFileStore.save(appContext, packet.fileName, output.toByteArray());
-                fileBuffers.remove(packet.id);
-                listener.onLog("Saved incoming file to " + saved.getAbsolutePath());
-                listener.onFileReceived(packet.fileName, saved.getAbsolutePath());
-                listener.onMessageDelivered(new ManetMessage(packet.id, packet.source, myNodeId,
-                        packet.ttl, "Received file: " + packet.fileName));
-            } catch (IOException e) {
-                listener.onLog("File save failed: " + e.getMessage());
+        if (packet.kind == FilePacket.Kind.META) {
+            handleFileMeta(packet, fromAddress);
+            return;
+        }
+        if (!seenFileChunks.add(packet.id + ":" + packet.index)) {
+            maybeRelayFile(packet, fromAddress);
+            return;
+        }
+        if (packet.digest.isEmpty() || packet.signature.isEmpty()) {
+            listener.onLog("Dropped unsigned file chunk for " + packet.fileName);
+            return;
+        }
+        byte[] raw = android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT);
+        if (!MeshIntegrity.sha256Hex(raw).equalsIgnoreCase(packet.digest)) {
+            listener.onLog("Dropped tampered file chunk " + packet.index + " of " + packet.fileName);
+            return;
+        }
+        if (!verifyFileChunk(packet)) {
+            listener.onLog("Dropped file chunk with invalid signature: " + packet.fileName);
+            return;
+        }
+        FileTransferBuffer buffer = bufferFor(packet);
+        buffer.chunks.put(packet.index, raw);
+        buffer.lastUpdate = System.currentTimeMillis();
+        listener.onFileProgress(packet.id, buffer.chunks.size(), Math.max(packet.total, buffer.total), packet.fileName);
+        scheduleFileRetry(packet.id);
+        tryCompleteFile(buffer, packet);
+        maybeRelayFile(packet, fromAddress);
+    }
+
+    private void handleFileMeta(FilePacket packet, String fromAddress) {
+        FileTransferBuffer buffer = bufferFor(packet);
+        if (peerPublicKeys.get(packet.source.toUpperCase()) == null) {
+            buffer.pendingMeta = packet;
+            listener.onLog("Waiting for " + packet.source + " signing key before accepting file " + packet.fileName);
+            maybeRelayFile(packet, fromAddress);
+            return;
+        }
+        if (!verifyFileMeta(packet)) {
+            listener.onLog("Rejected tampered file header for " + packet.fileName);
+            return;
+        }
+        buffer.pendingMeta = null;
+        buffer.fileName = packet.fileName;
+        buffer.source = packet.source;
+        buffer.destination = packet.destination;
+        buffer.fileSha = packet.digest;
+        buffer.total = packet.total;
+        buffer.size = packet.size;
+        buffer.metaOk = true;
+        listener.onLog("Authenticated file header " + packet.fileName + " sha256=" + packet.digest.substring(0, Math.min(12, packet.digest.length())));
+        scheduleFileRetry(packet.id);
+        tryCompleteFile(buffer, packet);
+        maybeRelayFile(packet, fromAddress);
+    }
+
+    private void handleFileRequest(FilePacket packet, String fromAddress) {
+        OutgoingFile outgoing = outgoingFiles.get(packet.id);
+        if (outgoing == null) {
+            if (packet.ttl > 1) forwardBytes(packet.decrementedTtl().toBytes(), fromAddress);
+            return;
+        }
+        listener.onLog("Resending missing chunks for " + outgoing.meta.fileName + ": " + packet.requestIndexes);
+        forwardBytes(outgoing.meta.toBytes(), null);
+        for (String item : packet.requestIndexes.split(",")) {
+            if (item.trim().isEmpty()) continue;
+            int index = Integer.parseInt(item.trim());
+            if (index >= 0 && index < outgoing.chunks.size()) {
+                forwardBytes(outgoing.chunks.get(index).toBytes(), null);
             }
         }
+    }
+
+    private FileTransferBuffer bufferFor(FilePacket packet) {
+        FileTransferBuffer buffer = fileBuffers.get(packet.id);
+        if (buffer != null) return buffer;
+        FileTransferBuffer created = new FileTransferBuffer();
+        FileTransferBuffer existing = fileBuffers.putIfAbsent(packet.id, created);
+        return existing == null ? created : existing;
+    }
+
+    private void tryCompleteFile(FileTransferBuffer buffer, FilePacket packet) {
+        if (!packet.isFor(myNodeId) || !buffer.metaOk || buffer.total <= 0 || buffer.chunks.size() != buffer.total) {
+            return;
+        }
+        try {
+            java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+            for (int i = 0; i < buffer.total; i++) {
+                byte[] chunk = buffer.chunks.get(i);
+                if (chunk == null) return;
+                output.write(chunk);
+            }
+            byte[] assembled = output.toByteArray();
+            String actual = MeshIntegrity.sha256Hex(assembled);
+            if (!actual.equalsIgnoreCase(buffer.fileSha)) {
+                listener.onLog("Rejected file " + buffer.fileName + ": content hash mismatch (tampered or corrupt).");
+                fileBuffers.remove(packet.id);
+                return;
+            }
+            java.io.File saved = MeshFileStore.save(appContext, buffer.fileName, assembled);
+            fileBuffers.remove(packet.id);
+            listener.onLog("Saved verified file to " + saved.getAbsolutePath());
+            listener.onFileReceived(buffer.fileName, saved.getAbsolutePath());
+            listener.onMessageDelivered(new ManetMessage(packet.id, buffer.source, myNodeId,
+                    packet.ttl, "Received file: " + buffer.fileName));
+        } catch (IOException e) {
+            listener.onLog("File save failed: " + e.getMessage());
+        }
+    }
+
+    private void scheduleFileRetry(String transferId) {
+        FileTransferBuffer buffer = fileBuffers.get(transferId);
+        if (buffer == null) return;
+        if (buffer.retry != null) handler.removeCallbacks(buffer.retry);
+        buffer.retry = () -> requestMissingChunks(transferId);
+        handler.postDelayed(buffer.retry, 2500);
+    }
+
+    private void requestMissingChunks(String transferId) {
+        FileTransferBuffer buffer = fileBuffers.get(transferId);
+        if (buffer == null || !buffer.metaOk || buffer.total <= 0) return;
+        if (!buffer.destination.equalsIgnoreCase(myNodeId) && !"ALL".equalsIgnoreCase(buffer.destination)) return;
+        StringBuilder missing = new StringBuilder();
+        for (int i = 0; i < buffer.total; i++) {
+            if (!buffer.chunks.containsKey(i)) {
+                if (missing.length() > 0) missing.append(',');
+                missing.append(i);
+            }
+        }
+        if (missing.length() == 0) return;
+        FilePacket request = FilePacket.request(transferId, myNodeId, buffer.source, ManetMessage.DEFAULT_TTL, missing.toString());
+        listener.onLog("Requesting missing file chunks: " + missing);
+        forwardBytes(request.toBytes(), null);
+        handler.postDelayed(() -> requestMissingChunks(transferId), 4000);
+    }
+
+    private void maybeRelayFile(FilePacket packet, String fromAddress) {
         if (!packet.destination.equalsIgnoreCase(myNodeId) && packet.ttl > 1) {
             forwardBytes(packet.decrementedTtl().toBytes(), fromAddress);
         }
     }
 
+    private boolean verifyFileMeta(FilePacket packet) {
+        String pub = peerPublicKeys.get(packet.source.toUpperCase());
+        if (pub == null || packet.signature.isEmpty()) return false;
+        return signer.verify(MeshIntegrity.fileMetaCanon(packet.id, packet.source, packet.destination,
+                packet.fileName, packet.total, packet.size, packet.digest), packet.signature, pub);
+    }
+
+    private boolean verifyFileChunk(FilePacket packet) {
+        String pub = peerPublicKeys.get(packet.source.toUpperCase());
+        if (pub == null || packet.signature.isEmpty()) return false;
+        return signer.verify(MeshIntegrity.fileChunkCanon(packet.id, packet.source, packet.destination,
+                packet.index, packet.total, packet.digest), packet.signature, pub);
+    }
+
+    private ManetMessage signedHello() {
+        ManetMessage hello = ManetMessage.hello(myNodeId, signer.publicKeyHex(), "");
+        return hello.withSignature(signer.sign(hello.canonical()));
+    }
+
+    private ManetMessage sign(ManetMessage message) {
+        return message.withSignature(signer.sign(message.canonical()));
+    }
+
+    private AuthResult authenticate(ManetMessage message) {
+        if (!message.hasSignature()) return AuthResult.TAMPERED;
+        String pub = peerPublicKeys.get(message.getSource().toUpperCase());
+        if (pub == null) return AuthResult.UNKNOWN;
+        return signer.verify(message.canonical(), message.getSignature(), pub) ? AuthResult.OK : AuthResult.TAMPERED;
+    }
+
+    private enum AuthResult { OK, UNKNOWN, TAMPERED }
+
     private static class FileTransferBuffer {
         final Map<Integer, byte[]> chunks = new ConcurrentHashMap<>();
-        FileTransferBuffer(FilePacket ignored) { }
+        String fileName = "";
+        String source = "";
+        String destination = "";
+        String fileSha = "";
+        int total;
+        int size;
+        boolean metaOk;
+        long lastUpdate;
+        FilePacket pendingMeta;
+        Runnable retry;
+    }
+
+    private static class OutgoingFile {
+        final FilePacket meta;
+        final List<FilePacket> chunks = new ArrayList<>();
+        OutgoingFile(FilePacket meta) { this.meta = meta; }
     }
 
     private int forwardMessage(ManetMessage message, String exceptAddress) {

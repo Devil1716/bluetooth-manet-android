@@ -16,14 +16,17 @@ import android.text.method.ScrollingMovementMethod;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.provider.OpenableColumns;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -43,6 +46,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
@@ -66,6 +70,11 @@ public class MainActivity extends AppCompatActivity {
     private EditText messageInput;
     private TextView fileProgressView;
     private ChatAdapter chatAdapter;
+    private RecyclerView chatRecyclerView;
+    private TextView meshStatusView;
+    private LinearLayout setupPanel;
+    private Button setupToggle;
+    private String lastReceivedFilePath;
     private MessageDao messageDao;
     private final ExecutorService databaseExecutor = Executors.newSingleThreadExecutor();
     private boolean pendingDiscovery;
@@ -81,10 +90,9 @@ public class MainActivity extends AppCompatActivity {
                         byte[] buffer = new byte[8192];
                         int read;
                         while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
-                        String name = uri.getLastPathSegment() == null ? "shared-file" : uri.getLastPathSegment();
-                        if (name.contains("/")) name = name.substring(name.lastIndexOf('/') + 1);
+                        String name = queryDisplayName(uri);
                         boolean sent = MeshService.sendFile(destinationInput.getText().toString(), name, output.toByteArray());
-                        String result = sent ? "File transfer started: " + name : "File transfer failed. Check the event log.";
+                        String result = sent ? "Signed file transfer started: " + name : "File transfer failed. Check the event log.";
                         runOnUiThread(() -> fileProgressView.setText(result));
                     } catch (Exception e) {
                         runOnUiThread(() -> fileProgressView.setText("File error: " + e.getMessage()));
@@ -168,10 +176,16 @@ public class MainActivity extends AppCompatActivity {
                 connectionView.setText(peers == null || peers.isEmpty()
                         ? getString(R.string.no_connections)
                         : joinPeers(peers));
+                if (meshStatusView != null) {
+                    meshStatusView.setText(peers == null || peers.isEmpty()
+                            ? getString(R.string.mesh_idle)
+                            : peers.size() + " signed link(s)");
+                }
             }
             if (intent.hasExtra("file_path")) {
-                fileProgressView.setText("Saved " + intent.getStringExtra("file_name") + " to "
-                        + intent.getStringExtra("file_path"));
+                lastReceivedFilePath = intent.getStringExtra("file_path");
+                fileProgressView.setText("Verified file saved. Tap to open: "
+                        + intent.getStringExtra("file_name"));
             } else if (intent.hasExtra("file_total")) {
                 fileProgressView.setText("File " + intent.getStringExtra("file_name") + ": "
                         + intent.getIntExtra("file_completed", 0) + "/" + intent.getIntExtra("file_total", 0));
@@ -194,7 +208,7 @@ public class MainActivity extends AppCompatActivity {
         bindViews();
         messageDao = AppDatabase.getInstance(this).messageDao();
         loadMessages();
-        appendLog("Bluetooth MANET v" + BuildConfig.VERSION_NAME + " ready.");
+        appendLog("Mesh v" + BuildConfig.VERSION_NAME + " ready. Messages and files are ECDSA-signed.");
         ContextCompat.registerReceiver(
                 this,
                 discoveryReceiver,
@@ -222,15 +236,28 @@ public class MainActivity extends AppCompatActivity {
     private void bindViews() {
         logView = findViewById(R.id.logView);
         connectionView = findViewById(R.id.connectionView);
+        meshStatusView = findViewById(R.id.meshStatusView);
         nodeIdInput = findViewById(R.id.nodeIdInput);
         destinationInput = findViewById(R.id.destinationInput);
         messageInput = findViewById(R.id.messageInput);
         fileProgressView = findViewById(R.id.fileProgressView);
+        setupPanel = findViewById(R.id.setupPanel);
+        setupToggle = findViewById(R.id.setupToggle);
         logView.setMovementMethod(new ScrollingMovementMethod());
-        RecyclerView chatRecyclerView = findViewById(R.id.chatRecyclerView);
+        chatRecyclerView = findViewById(R.id.chatRecyclerView);
         chatAdapter = new ChatAdapter();
-        chatRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        LinearLayoutManager layoutManager = new LinearLayoutManager(this);
+        layoutManager.setStackFromEnd(true);
+        chatRecyclerView.setLayoutManager(layoutManager);
         chatRecyclerView.setAdapter(chatAdapter);
+        nodeIdInput.setText(getSharedPreferences("mesh", MODE_PRIVATE).getString("node_id", "A"));
+
+        setupToggle.setOnClickListener(v -> {
+            boolean show = setupPanel.getVisibility() != android.view.View.VISIBLE;
+            setupPanel.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+            setupToggle.setText(show ? R.string.hide_setup : R.string.show_setup);
+        });
+        fileProgressView.setOnClickListener(v -> openReceivedFile());
 
         Spinner peerSpinner = findViewById(R.id.peerSpinner);
         peerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
@@ -519,11 +546,18 @@ public class MainActivity extends AppCompatActivity {
     private void loadMessages() {
         databaseExecutor.execute(() -> {
             List<ChatMessageEntity> messages = messageDao.getAll();
-            runOnUiThread(() -> chatAdapter.setMessages(messages));
+            runOnUiThread(() -> {
+                chatAdapter.setMessages(messages);
+                if (chatRecyclerView != null && chatAdapter.getItemCount() > 0) {
+                    chatRecyclerView.scrollToPosition(chatAdapter.getItemCount() - 1);
+                }
+            });
         });
     }
 
     private void startMeshService() {
+        getSharedPreferences("mesh", MODE_PRIVATE).edit()
+                .putString("node_id", nodeIdInput.getText().toString().trim()).apply();
         Intent serviceIntent = new Intent(this, MeshService.class);
         serviceIntent.putExtra("node_id", nodeIdInput.getText().toString().trim());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -554,6 +588,38 @@ public class MainActivity extends AppCompatActivity {
         if (pendingDiscovery && hasScanPermission()) {
             pendingDiscovery = false;
             startDiscovery();
+        }
+    }
+
+    private String queryDisplayName(Uri uri) {
+        String fallback = uri.getLastPathSegment() == null ? "shared-file" : uri.getLastPathSegment();
+        if (fallback.contains("/")) fallback = fallback.substring(fallback.lastIndexOf('/') + 1);
+        try (android.database.Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (name != null && !name.trim().isEmpty()) return name;
+            }
+        } catch (Exception ignored) { }
+        return fallback;
+    }
+
+    private void openReceivedFile() {
+        if (lastReceivedFilePath == null) return;
+        File file = new File(lastReceivedFilePath);
+        if (!file.exists()) {
+            Toast.makeText(this, "File is no longer on disk.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".files", file);
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        String mime = android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(android.webkit.MimeTypeMap.getFileExtensionFromUrl(file.getName()));
+        intent.setDataAndType(uri, mime == null ? "*/*" : mime);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(intent, "Open file"));
+        } catch (Exception e) {
+            Toast.makeText(this, "No app can open this file.", Toast.LENGTH_SHORT).show();
         }
     }
 

@@ -44,7 +44,7 @@ Not copied from BitChat (future work): Noise XX sessions, Nostr/internet transpo
 
 ## Security boundary
 
-The Android Keystore owns the installation AES key. `AesGcmCipher` provides authenticated encryption for packet payloads. Relays must never decrypt application payloads. Live per-peer Noise handshakes are still planned before `MeshPacket` is the only on-air format.
+The Android Keystore / local EC keypair owns this installation's identity. `PacketSigner` uses ECDSA P-256 over SHA-256. Relays forward packets without modifying the signed fields (TTL is excluded from the signature). Destinations drop messages or files whose signature or SHA-256 hash does not match. Unsigned application payloads are treated as tampered.
 
 ## Persistence
 

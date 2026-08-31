@@ -23,4 +23,23 @@ public class FilePacketTest {
         assertEquals(9, forwarded.total);
         assertTrue(forwarded.isFor("B"));
     }
+
+    @Test
+    public void signedChunkRoundTrip() {
+        FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, "id", "A", "B", 7, "notes.txt",
+                0, 1, 4, "abc123", "Zg==", "sig");
+        FilePacket parsed = FilePacket.fromWire(packet.toWire());
+        assertEquals("abc123", parsed.digest);
+        assertEquals("sig", parsed.signature);
+        assertEquals(FilePacket.Kind.CHUNK, parsed.kind);
+    }
+
+    @Test
+    public void metaRoundTrip() {
+        FilePacket meta = FilePacket.meta("id", "A", "B", 7, "a.bin", 3, 1200, "ffff", "sig");
+        FilePacket parsed = FilePacket.fromWire(meta.toWire());
+        assertEquals(FilePacket.Kind.META, parsed.kind);
+        assertEquals(1200, parsed.size);
+        assertEquals("ffff", parsed.digest);
+    }
 }

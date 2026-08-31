@@ -1,6 +1,5 @@
 package com.devil1716.bluetoothmanet;
 
-import android.graphics.Color;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -9,6 +8,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.text.DateFormat;
@@ -41,9 +41,9 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int type) {
         if (type == HEADER) {
             TextView view = new TextView(parent.getContext());
-            view.setPadding(8, 20, 8, 8);
-            view.setTextColor(Color.DKGRAY);
-            view.setTextSize(14);
+            view.setPadding(12, 16, 12, 8);
+            view.setTextColor(ContextCompat.getColor(parent.getContext(), R.color.mesh_teal));
+            view.setTextSize(12);
             return new HeaderHolder(view);
         }
         View view = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_chat_message, parent, false);
@@ -52,7 +52,7 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
         if (holder instanceof HeaderHolder) {
-            ((HeaderHolder) holder).view.setText("Conversation · " + rows.get(position));
+            ((HeaderHolder) holder).view.setText("Chat with " + rows.get(position));
             return;
         }
         ChatMessageEntity message = (ChatMessageEntity) rows.get(position);
@@ -60,11 +60,12 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         messageHolder.text.setText(message.text);
         String metadata = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date(message.timestamp));
         if (message.sentByMe) metadata += "  ·  " + message.status.name();
+        else metadata += "  ·  verified";
         messageHolder.meta.setText(metadata);
         LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) messageHolder.bubble.getLayoutParams();
         params.gravity = message.sentByMe ? Gravity.END : Gravity.START;
         messageHolder.bubble.setLayoutParams(params);
-        messageHolder.bubble.setBackgroundColor(message.sentByMe ? Color.rgb(210, 232, 255) : Color.rgb(232, 240, 232));
+        messageHolder.bubble.setBackgroundResource(message.sentByMe ? R.drawable.bg_bubble_out : R.drawable.bg_bubble_in);
     }
 
     @Override public int getItemCount() { return rows.size(); }

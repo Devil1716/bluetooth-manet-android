@@ -7,8 +7,8 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 - Advertises and scans at the same time (GATT peripheral + central).
 - Links nearby MANET phones automatically over Bluetooth Low Energy.
 - Relays messages and files with TTL 7, deduplication, and store-and-forward.
-- Accepts classic RFCOMM for paired devices and the Windows CLI node.
-- Saves received files under the app's Downloads folder.
+- ECDSA-signs chat and files so relays cannot tamper with payloads.
+- Saves received files under the app's Downloads folder after SHA-256 verification.
 
 ## Project notes
 
@@ -16,7 +16,7 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 - Language: Java + Kotlin
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.3.0`
+- Current release: `v1.3.1`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run

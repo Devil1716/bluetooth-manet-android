@@ -48,4 +48,13 @@ public class ManetMessageTest {
         assertEquals("NODE-A", parsed.getData());
         assertEquals(ManetMessage.DEFAULT_TTL, parsed.getTtl());
     }
+
+    @Test
+    public void signedWireRoundTripPreservesSignature() {
+        ManetMessage signed = new ManetMessage(ManetMessage.Type.MSG, "abc", "A", "B", 7, "hello", "deadbeef");
+        ManetMessage parsed = ManetMessage.fromWire(signed.toWire());
+        assertEquals("deadbeef", parsed.getSignature());
+        assertEquals("hello", parsed.getData());
+        assertEquals(signed.canonical(), parsed.canonical());
+    }
 }
