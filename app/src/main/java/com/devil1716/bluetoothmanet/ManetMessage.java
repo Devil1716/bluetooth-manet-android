@@ -5,7 +5,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 public class ManetMessage {
-    public static final int DEFAULT_TTL = 3;
+    public static final int DEFAULT_TTL = 7;
     public enum Type { MSG, ACK, HELLO }
 
     private final Type type;
@@ -60,7 +60,7 @@ public class ManetMessage {
     }
 
     public static ManetMessage hello(String source) {
-        return new ManetMessage(Type.HELLO, UUID.randomUUID().toString(), source, "*", 1, source);
+        return new ManetMessage(Type.HELLO, UUID.randomUUID().toString(), source, "*", DEFAULT_TTL, source);
     }
 
     public Type getType() { return type; }

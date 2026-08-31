@@ -9,14 +9,12 @@ import android.bluetooth.BluetoothSocket;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import android.os.Environment;
 
 import androidx.core.content.ContextCompat;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +34,7 @@ public class BluetoothMeshManager {
         void onMessageStatusChanged(ManetMessage message, MessageStatus status);
         default void onMessageAcknowledged(String messageId) { }
         default void onFileProgress(String transferId, int completed, int total, String fileName) { }
+        default void onFileReceived(String fileName, String path) { }
     }
 
     private static final String SERVICE_NAME = "MANET";
@@ -51,7 +50,9 @@ public class BluetoothMeshManager {
     private final Map<String, Long> seenMessages = new LinkedHashMap<>(256, .75f, true);
     private final Set<String> seenFileChunks = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final ConcurrentHashMap<String, FileTransferBuffer> fileBuffers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> helloSeen = new ConcurrentHashMap<>();
     private final AppDatabase database;
+    private MeshLinkBridge extraLinks;
     private static final long SEEN_TTL_MS = 10 * 60 * 1000L;
 
     private volatile boolean accepting;
@@ -63,6 +64,27 @@ public class BluetoothMeshManager {
         this.listener = listener;
         this.adapter = BluetoothAdapter.getDefaultAdapter();
         this.database = AppDatabase.getInstance(this.appContext);
+    }
+
+    public void setExtraLinks(MeshLinkBridge extraLinks) {
+        this.extraLinks = extraLinks;
+    }
+
+    public void notifyLinksChanged() {
+        publishConnections();
+        flushPending();
+    }
+
+    public void ingestPayload(String payload, String fromPeerId) {
+        if (payload == null || payload.trim().isEmpty()) return;
+        for (String line : payload.split("\n")) {
+            if (!line.trim().isEmpty()) handleIncoming(line.trim(), fromPeerId);
+        }
+    }
+
+    public void broadcastHello() {
+        if (!hasAnyPeers()) return;
+        forwardMessage(ManetMessage.hello(myNodeId), null);
     }
 
     public BluetoothAdapter getAdapter() {
@@ -80,7 +102,15 @@ public class BluetoothMeshManager {
 
     @SuppressLint("MissingPermission")
     public void startAccepting() {
-        if (!hasConnectPermission() || adapter == null || accepting) {
+        if (adapter == null) {
+            listener.onLog("Cannot listen: Bluetooth adapter missing.");
+            return;
+        }
+        if (!hasConnectPermission()) {
+            listener.onLog("Cannot listen: BLUETOOTH_CONNECT permission is missing.");
+            return;
+        }
+        if (accepting) {
             return;
         }
 
@@ -144,19 +174,19 @@ public class BluetoothMeshManager {
                     }
                     return;
                 }
-                listener.onLog("Connecting to " + safeDeviceLabel(device) + "...");
+                listener.onLog("Connecting to " + safeDeviceLabel(device) + " over RFCOMM...");
                 try {
-                    socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
-                    socket.connect();
-                } catch (IOException secureFailure) {
-                    closeSocket(socket);
-                    listener.onLog("Secure RFCOMM connect failed; trying insecure RFCOMM...");
                     socket = device.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID);
+                    socket.connect();
+                } catch (IOException insecureFailure) {
+                    closeSocket(socket);
+                    listener.onLog("Insecure RFCOMM connect failed; trying secure RFCOMM...");
+                    socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
                     try {
                         socket.connect();
-                    } catch (IOException insecureFailure) {
+                    } catch (IOException secureFailure) {
                         closeSocket(socket);
-                        listener.onLog("Insecure RFCOMM connect failed; trying channel fallback...");
+                        listener.onLog("Secure RFCOMM connect failed; trying channel fallback...");
                         java.lang.reflect.Method method = BluetoothDevice.class.getMethod("createRfcommSocket", int.class);
                         socket = (BluetoothSocket) method.invoke(device, 1);
                         socket.connect();
@@ -187,8 +217,9 @@ public class BluetoothMeshManager {
             listener.onMessageDelivered(message);
             return true;
         }
-        if (sockets.isEmpty()) {
-            listener.onLog("No active peers. Connect to a device before sending.");
+        if (!hasAnyPeers()) {
+            listener.onLog("No active mesh peers. Stay on this screen so BLE can find nearby phones, or tap a discovered peer.");
+            storePending(message);
             listener.onMessageStatusChanged(message, MessageStatus.FAILED);
             return false;
         }
@@ -238,18 +269,16 @@ public class BluetoothMeshManager {
                 return;
             }
             ManetMessage message = ManetMessage.fromWire(payload);
+            if (message.getType() == ManetMessage.Type.HELLO) {
+                handleHello(message, fromAddress);
+                return;
+            }
             if (!markSeen(message.getId())) {
                 return;
             }
 
             listener.onLog("RX " + message.getSource() + " -> " + message.getDestination()
                     + " (ttl=" + message.getTtl() + ")");
-
-            if (message.getType() == ManetMessage.Type.HELLO) {
-                peerNodeIds.put(fromAddress, message.getData());
-                listener.onLog("Peer " + fromAddress + " is node " + message.getData());
-                return;
-            }
 
             if (message.getType() == ManetMessage.Type.ACK) {
                 if (message.getDestination().equalsIgnoreCase(myNodeId)) {
@@ -302,9 +331,11 @@ public class BluetoothMeshManager {
     }
 
     private void storePending(ManetMessage message) {
-        database.pendingMessageDao().insert(new PendingMessageEntity(message.getId(),
-                message.getDestination(), message.toWire(), System.currentTimeMillis()));
-        listener.onLog("Stored " + message.getId() + " for offline destination " + message.getDestination());
+        executor.execute(() -> {
+            database.pendingMessageDao().insert(new PendingMessageEntity(message.getId(),
+                    message.getDestination(), message.toWire(), System.currentTimeMillis()));
+            listener.onLog("Stored " + message.getId() + " for offline destination " + message.getDestination());
+        });
     }
 
     private void sendHello(BluetoothSocket socket) {
@@ -330,19 +361,44 @@ public class BluetoothMeshManager {
     }
 
     public boolean sendFile(String destination, String fileName, byte[] contents) {
-        if (contents == null || contents.length == 0 || sockets.isEmpty()) return false;
+        String trimmedDestination = destination == null ? "" : destination.trim().toUpperCase();
+        if (contents == null || contents.length == 0) {
+            listener.onLog("File is empty.");
+            return false;
+        }
+        if (trimmedDestination.isEmpty()) {
+            listener.onLog("Destination is required to send a file.");
+            return false;
+        }
+        if (contents.length > 2 * 1024 * 1024) {
+            listener.onLog("File is larger than 2 MB. Choose a smaller file.");
+            return false;
+        }
+        if (!hasAnyPeers()) {
+            listener.onLog("No active mesh peers. Files are sent over BLE or RFCOMM once a phone is linked.");
+            return false;
+        }
         int total = (contents.length + FilePacket.CHUNK_SIZE - 1) / FilePacket.CHUNK_SIZE;
         String id = UUID.randomUUID().toString();
+        listener.onLog("Sending file " + fileName + " as " + total + " chunk(s) to " + trimmedDestination);
+        int delivered = 0;
         for (int index = 0; index < total; index++) {
             int start = index * FilePacket.CHUNK_SIZE;
             int end = Math.min(contents.length, start + FilePacket.CHUNK_SIZE);
             String data = android.util.Base64.encodeToString(java.util.Arrays.copyOfRange(contents, start, end), android.util.Base64.NO_WRAP);
-            FilePacket packet = new FilePacket(id, myNodeId, destination.toUpperCase(), ManetMessage.DEFAULT_TTL,
+            FilePacket packet = new FilePacket(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
                     fileName.replace("|", "_"), index, total, data);
-            forwardBytes(packet.toBytes(), null);
+            if (forwardBytes(packet.toBytes(), null) > 0) delivered++;
             listener.onFileProgress(id, index + 1, total, fileName);
+            if (index < total - 1) {
+                try { Thread.sleep(20); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            }
         }
-        return true;
+        boolean sent = delivered > 0;
+        listener.onLog(sent
+                ? "File " + fileName + " queued on the mesh (" + delivered + "/" + total + " chunks)."
+                : "File " + fileName + " could not be written to any peer.");
+        return sent;
     }
 
     private int forwardBytes(byte[] bytes, String exceptAddress) {
@@ -352,7 +408,20 @@ public class BluetoothMeshManager {
             try { entry.getValue().getOutputStream().write(bytes); entry.getValue().getOutputStream().flush(); count++; }
             catch (IOException ignored) { }
         }
+        if (extraLinks != null) count += extraLinks.send(bytes, exceptAddress);
         return count;
+    }
+
+    private void handleHello(ManetMessage message, String fromAddress) {
+        String node = message.getData() == null ? message.getSource() : message.getData();
+        peerNodeIds.put(fromAddress, node);
+        listener.onLog("Peer " + fromAddress + " is node " + node);
+        executor.execute(() -> database.meshStateDao().upsertNeighbor(new MeshNeighborEntity(
+                fromAddress, node, 0, null, null, 1, System.currentTimeMillis(), true)));
+        long now = System.currentTimeMillis();
+        Long previous = helloSeen.put(node, now);
+        if (previous != null && now - previous < 8_000L) return;
+        if (message.getTtl() > 1) forwardMessage(message.decrementedTtl(), fromAddress);
     }
 
     private void handleFilePacket(FilePacket packet, String fromAddress) {
@@ -365,19 +434,27 @@ public class BluetoothMeshManager {
         }
         buffer.chunks.put(packet.index, android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT));
         listener.onFileProgress(packet.id, buffer.chunks.size(), packet.total, packet.fileName);
-        if (buffer.chunks.size() == packet.total && packet.destination.equalsIgnoreCase(myNodeId)) {
+        boolean complete = buffer.chunks.size() == packet.total;
+        if (complete && packet.isFor(myNodeId)) {
             try {
                 java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
-                for (int i = 0; i < packet.total; i++) output.write(buffer.chunks.get(i));
-                java.io.File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!downloads.exists()) downloads.mkdirs();
-                java.io.FileOutputStream fileOutput = new java.io.FileOutputStream(new java.io.File(downloads, packet.fileName));
-                fileOutput.write(output.toByteArray());
-                fileOutput.close();
+                for (int i = 0; i < packet.total; i++) {
+                    byte[] chunk = buffer.chunks.get(i);
+                    if (chunk == null) return;
+                    output.write(chunk);
+                }
+                java.io.File saved = MeshFileStore.save(appContext, packet.fileName, output.toByteArray());
                 fileBuffers.remove(packet.id);
-            } catch (IOException e) { listener.onLog("File save failed: " + e.getMessage()); }
-        } else if (!packet.destination.equalsIgnoreCase(myNodeId) && packet.ttl > 1) {
-            forwardBytes(packet.toWire().replace("|" + packet.ttl + "|", "|" + (packet.ttl - 1) + "|").getBytes(StandardCharsets.UTF_8), fromAddress);
+                listener.onLog("Saved incoming file to " + saved.getAbsolutePath());
+                listener.onFileReceived(packet.fileName, saved.getAbsolutePath());
+                listener.onMessageDelivered(new ManetMessage(packet.id, packet.source, myNodeId,
+                        packet.ttl, "Received file: " + packet.fileName));
+            } catch (IOException e) {
+                listener.onLog("File save failed: " + e.getMessage());
+            }
+        }
+        if (!packet.destination.equalsIgnoreCase(myNodeId) && packet.ttl > 1) {
+            forwardBytes(packet.decrementedTtl().toBytes(), fromAddress);
         }
     }
 
@@ -387,29 +464,16 @@ public class BluetoothMeshManager {
     }
 
     private int forwardMessage(ManetMessage message, String exceptAddress) {
-        int forwarded = 0;
-        for (String address : sockets.keySet()) {
-            if (address.equals(exceptAddress)) {
-                continue;
-            }
-
-            BluetoothSocket socket = sockets.get(address);
-            if (socket == null || !socket.isConnected()) {
-                continue;
-            }
-
-            try {
-                OutputStream outputStream = socket.getOutputStream();
-                outputStream.write(message.toBytes());
-                outputStream.flush();
-                forwarded++;
-            } catch (IOException e) {
-                listener.onLog("Failed to forward via " + address + ": " + e.getMessage());
-            }
+        int forwarded = forwardBytes(message.toBytes(), exceptAddress);
+        if (message.getType() != ManetMessage.Type.HELLO) {
+            listener.onLog("Forwarded " + message.getId() + " to " + forwarded + " peer(s).");
         }
-
-        listener.onLog("Forwarded " + message.getId() + " to " + forwarded + " peer(s).");
         return forwarded;
+    }
+
+    private boolean hasAnyPeers() {
+        if (!sockets.isEmpty()) return true;
+        return extraLinks != null && extraLinks.hasPeers();
     }
 
     private void publishConnections() {
@@ -417,6 +481,7 @@ public class BluetoothMeshManager {
         for (BluetoothSocket socket : sockets.values()) {
             peers.add(safeDeviceLabel(socket.getRemoteDevice()));
         }
+        if (extraLinks != null) peers.addAll(extraLinks.peerLabels());
         listener.onConnectionsChanged(peers);
     }
 

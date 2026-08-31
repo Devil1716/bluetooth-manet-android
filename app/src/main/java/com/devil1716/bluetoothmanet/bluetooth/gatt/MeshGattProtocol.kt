@@ -7,7 +7,14 @@ object MeshGattProtocol {
     val SERVICE_UUID: UUID = UUID.fromString("4ba1562d-8ec0-4b7c-b168-ef3523bf1a01")
     val INBOUND_UUID: UUID = UUID.fromString("4ba1562d-8ec0-4b7c-b168-ef3523bf1a02")
     val OUTBOUND_UUID: UUID = UUID.fromString("4ba1562d-8ec0-4b7c-b168-ef3523bf1a03")
+    val PACKET_UUID: UUID = UUID.fromString("4ba1562d-8ec0-4b7c-b168-ef3523bf1a04")
+    val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     const val MAX_FRAME_PAYLOAD_BYTES = 180
+    const val MANUFACTURER_ID = 0x1716
+    const val REQUEST_MTU = 517
+    const val DEFAULT_ATT_MTU = 23
+    const val ATT_HEADER_BYTES = 3
+    const val MAX_LINKS = 6
 }
 
 data class GattFrame(

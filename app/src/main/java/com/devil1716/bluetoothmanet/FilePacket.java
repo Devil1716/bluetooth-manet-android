@@ -15,6 +15,16 @@ public class FilePacket {
         if (p.length != 9 || !"FILE".equals(p[0])) throw new IllegalArgumentException("Invalid FILE packet");
         return new FilePacket(p[1],p[2],p[3],Integer.parseInt(p[4]),p[5],Integer.parseInt(p[6]),Integer.parseInt(p[7]),p[8]);
     }
-    public String toWire() { return String.format("FILE|%s|%s|%s|%d|%s|%d|%d|%s",id,source,destination,ttl,fileName,index,total,data); }
+    public String toWire() {
+        return String.format("FILE|%s|%s|%s|%d|%s|%d|%d|%s",id,source,destination,ttl,fileName,index,total,data);
+    }
     public byte[] toBytes() { return (toWire()+"\n").getBytes(StandardCharsets.UTF_8); }
+    public FilePacket decrementedTtl() {
+        return new FilePacket(id, source, destination, ttl - 1, fileName, index, total, data);
+    }
+    public boolean isFor(String nodeId) {
+        return destination.equalsIgnoreCase(nodeId)
+                || "ALL".equalsIgnoreCase(destination)
+                || "*".equals(destination);
+    }
 }

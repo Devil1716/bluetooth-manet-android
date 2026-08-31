@@ -39,11 +39,18 @@ class InMemoryRoutingManager(
     override suspend fun forward(packet: MeshPacket): Result<Unit> {
         if (packet.expired()) return Result.failure(IllegalStateException("Packet expired"))
         val route = bestRoute(packet.destinationId)
-            ?: return Result.failure(IllegalStateException("No route to ${packet.destinationId}"))
-        if (route.nextHopId == packet.previousHop) {
-            return Result.failure(IllegalStateException("Loop prevention rejected previous hop"))
+        if (route != null && route.nextHopId != packet.previousHop) {
+            return forwarder.send(route.nextHopId, packet.forwarded(previous = route.nextHopId, next = route.nextHopId))
         }
-        return forwarder.send(route.nextHopId, packet.forwarded(previous = route.nextHopId, next = route.nextHopId))
+        val relays = neighbors.values.filter { it.connected && it.deviceId != packet.previousHop }
+        if (relays.isEmpty()) {
+            return Result.failure(IllegalStateException("No route to ${packet.destinationId}"))
+        }
+        var last: Result<Unit> = Result.success(Unit)
+        relays.forEach { neighbor ->
+            last = forwarder.send(neighbor.deviceId, packet.forwarded(previous = neighbor.deviceId, next = neighbor.deviceId))
+        }
+        return last
     }
 
     override suspend fun removeExpiredRoutes(now: Long) {

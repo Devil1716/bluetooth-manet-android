@@ -1,66 +1,64 @@
 # Bluetooth MANET Demo
 
-Android Studio project for a simple Bluetooth-based MANET proof of concept in Java.
+Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no pairing) and can still use classic Bluetooth RFCOMM for the Windows node.
 
 ## What it does
 
-- Accepts incoming classic Bluetooth RFCOMM connections.
-- Discovers nearby devices and lets you tap to connect.
-- Sends messages in the format `ID|SRC|DEST|TTL|DATA`.
-- Delivers messages locally when `DEST` matches this phone's node ID.
-- Relays unseen messages to connected peers while decrementing TTL.
+- Advertises and scans at the same time (GATT peripheral + central).
+- Links nearby MANET phones automatically over Bluetooth Low Energy.
+- Relays messages and files with TTL 7, deduplication, and store-and-forward.
+- Accepts classic RFCOMM for paired devices and the Windows CLI node.
+- Saves received files under the app's Downloads folder.
 
 ## Project notes
 
 - Package: `com.devil1716.bluetoothmanet`
-- Language: Java
+- Language: Java + Kotlin
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.2.5`
+- Current release: `v1.3.0`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
 
 1. Open the project in Android Studio.
-2. Let Android Studio install the missing Android SDK / JDK if prompted.
-3. Build and run on at least 2 Android phones.
-4. On each phone:
-   - Tap `Enable Bluetooth`
-   - Tap `Make Discoverable`
-   - Give the phone a simple node ID like `A`, `B`, or `C`
-   - Tap `Start Listening`
-   - Tap `Discover Nearby Peers`
-   - Tap a device in the list to connect
-5. Send a message from one node to another using the destination node ID.
+2. Build and run on at least 2 Android phones.
+3. On each phone:
+   - Allow Bluetooth, notifications, and Location (many OEMs will not BLE-scan with Location off).
+   - Tap `Enable Bluetooth` if needed.
+   - Give each phone a different node ID (`A`, `B`, `C`).
+   - Tap `Start Mesh`.
+   - Wait for the event log to show a BLE link. Pairing is not required for phone-to-phone BLE.
+4. Send a message or file using the other phone's node ID.
+
+Manual `Connect Selected Peer` is only needed for classic RFCOMM / Windows. BLE peers appear on their own.
 
 ## Multi-hop test
 
-- Phone A connects to Phone B
-- Phone B connects to Phone C
-- Send from A to `C`
-- Phone B should forward automatically if TTL is still greater than 1
+- Phone A links to Phone B over BLE, Phone B links to Phone C.
+- Send from A to `C`.
+- B forwards automatically while TTL is greater than 1.
 
 ## Important limitations
 
-- Android Bluetooth discovery and classic RFCOMM behavior vary by device vendor.
-- Phones usually need to be paired first for reliable RFCOMM sockets.
-- This is a demo routing layer, not a production mesh protocol.
-- The current environment could not build an APK because Java / Gradle / Android SDK were not installed locally.
+- Keep the app in the foreground (or the mesh notification) so Android does not freeze BLE.
+- Location must be on for BLE scanning on many devices.
+- Phones usually need to be paired first only for classic RFCOMM / Windows.
+- This is a demo mesh, not BitChat wire-compatible and not a production protocol.
+- Received files land in the app-specific Downloads directory, not the system Downloads list.
 
 ## Windows laptop node
 
-If you want the Windows laptop to join the same MANET, use the Python CLI in [windows-node](./windows-node).
+If you want the Windows laptop to join the same MANET, use the Python CLI in [windows-node](./windows-node). That path still uses RFCOMM.
 
-## Release notes
+## Architecture
 
-### v1.0.3
-- Improved Bluetooth discovery/discoverable reliability by centralizing adapter and permission prechecks.
-- Added clearer logs for blocked Bluetooth operations (disabled adapter or missing runtime permissions).
+BitChat's dual-role BLE mesh, flood-with-TTL routing, presence hellos, and store-and-forward are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Publishing a GitHub release
 
 If the app version is bumped but the GitHub "Releases" page still shows the old version, run the **Android Release** workflow manually:
 
 1. Open **Actions → Android Release → Run workflow**.
-2. Set `tag` to the version tag (example: `v1.0.3`).
+2. Set `tag` to the version tag (example: `v1.3.0`).
 3. Run the workflow. It builds the APK and publishes/updates the GitHub release for that tag.

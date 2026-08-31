@@ -46,5 +46,6 @@ public class ManetMessageTest {
 
         assertEquals(ManetMessage.Type.HELLO, parsed.getType());
         assertEquals("NODE-A", parsed.getData());
+        assertEquals(ManetMessage.DEFAULT_TTL, parsed.getTtl());
     }
 }

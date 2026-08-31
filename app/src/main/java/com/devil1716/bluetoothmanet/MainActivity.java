@@ -45,7 +45,7 @@ import java.util.concurrent.Executors;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
-public class MainActivity extends AppCompatActivity implements BluetoothMeshManager.Listener {
+public class MainActivity extends AppCompatActivity {
     private static final String LATEST_RELEASE_API =
             "https://api.github.com/repos/Devil1716/bluetooth-manet-android/releases/latest";
     private static final String LATEST_RELEASE_PAGE =
@@ -57,10 +57,9 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
 
     private final Map<String, PeerDevice> discoveredPeers = new LinkedHashMap<>();
 
-    private BluetoothMeshManager meshManager;
+    private BluetoothAdapter bluetoothAdapter;
     private ArrayAdapter<PeerDevice> peerAdapter;
     private TextView logView;
-    private TextView inboxView;
     private TextView connectionView;
     private EditText nodeIdInput;
     private EditText destinationInput;
@@ -83,8 +82,10 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                         int read;
                         while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
                         String name = uri.getLastPathSegment() == null ? "shared-file" : uri.getLastPathSegment();
+                        if (name.contains("/")) name = name.substring(name.lastIndexOf('/') + 1);
                         boolean sent = MeshService.sendFile(destinationInput.getText().toString(), name, output.toByteArray());
-                        runOnUiThread(() -> fileProgressView.setText(sent ? "File transfer started: " + name : "File transfer failed: no mesh connection."));
+                        String result = sent ? "File transfer started: " + name : "File transfer failed. Check the event log.";
+                        runOnUiThread(() -> fileProgressView.setText(result));
                     } catch (Exception e) {
                         runOnUiThread(() -> fileProgressView.setText("File error: " + e.getMessage()));
                     }
@@ -94,7 +95,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private final ActivityResultLauncher<Intent> enableBluetoothLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
                 appendLog("Bluetooth enable flow finished.");
-                BluetoothAdapter adapter = meshManager.getAdapter();
+                BluetoothAdapter adapter = bluetoothAdapter;
                 if (adapter != null && adapter.isEnabled()) {
                     preloadBondedDevices();
                     resumePendingActions();
@@ -151,10 +152,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             String id = intent.getStringExtra("message_id");
             MessageStatus status = MessageStatus.valueOf(intent.getStringExtra("status"));
             if (status == MessageStatus.DELIVERED && intent.hasExtra("body")) {
-                ManetMessage message = new ManetMessage(id, intent.getStringExtra("source"),
-                        intent.getStringExtra("destination"), ManetMessage.DEFAULT_TTL,
-                        intent.getStringExtra("body"));
-                saveMessage(message, status, message.getSource().equalsIgnoreCase(nodeIdInput.getText().toString().trim()));
+                loadMessages();
             } else {
                 databaseExecutor.execute(() -> { messageDao.updateStatus(id, status); loadMessages(); });
             }
@@ -165,7 +163,16 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         @Override public void onReceive(Context context, Intent intent) {
             String message = intent.getStringExtra("message");
             if (message != null) appendLog("Mesh: " + message);
-            if (intent.hasExtra("file_total")) {
+            if (intent.hasExtra("peers")) {
+                ArrayList<String> peers = intent.getStringArrayListExtra("peers");
+                connectionView.setText(peers == null || peers.isEmpty()
+                        ? getString(R.string.no_connections)
+                        : joinPeers(peers));
+            }
+            if (intent.hasExtra("file_path")) {
+                fileProgressView.setText("Saved " + intent.getStringExtra("file_name") + " to "
+                        + intent.getStringExtra("file_path"));
+            } else if (intent.hasExtra("file_total")) {
                 fileProgressView.setText("File " + intent.getStringExtra("file_name") + ": "
                         + intent.getIntExtra("file_completed", 0) + "/" + intent.getIntExtra("file_total", 0));
             }
@@ -177,8 +184,8 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        meshManager = new BluetoothMeshManager(this, this);
-        if (!meshManager.isBluetoothSupported()) {
+        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        if (bluetoothAdapter == null) {
             Toast.makeText(this, "Bluetooth is not supported on this device.", Toast.LENGTH_LONG).show();
             finish();
             return;
@@ -224,7 +231,6 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         chatAdapter = new ChatAdapter();
         chatRecyclerView.setLayoutManager(new LinearLayoutManager(this));
         chatRecyclerView.setAdapter(chatAdapter);
-        syncNodeId();
 
         Spinner peerSpinner = findViewById(R.id.peerSpinner);
         peerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
@@ -238,9 +244,8 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 Toast.makeText(this, "No peer selected.", Toast.LENGTH_SHORT).show();
                 return;
             }
-            BluetoothAdapter adapter = meshManager.getAdapter();
-            BluetoothDevice device = adapter.getRemoteDevice(peer.getAddress());
             MeshService.connectToAddress(this, peer.getAddress());
+            appendLog("Connecting to " + peer.getAddress() + " over BLE and RFCOMM...");
         });
 
         Button enableButton = findViewById(R.id.enableBluetoothButton);
@@ -266,7 +271,13 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
                 Toast.makeText(this, "Message was not sent. Check the event log.", Toast.LENGTH_SHORT).show();
             }
         });
-        sendFileButton.setOnClickListener(v -> filePickerLauncher.launch("*/*"));
+        sendFileButton.setOnClickListener(v -> {
+            if (destinationInput.getText().toString().trim().isEmpty()) {
+                Toast.makeText(this, "Enter the destination node ID before sending a file.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            filePickerLauncher.launch("*/*");
+        });
     }
 
     private void requestNeededPermissions() {
@@ -275,6 +286,8 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             maybeAddPermission(permissions, Manifest.permission.BLUETOOTH_CONNECT);
             maybeAddPermission(permissions, Manifest.permission.BLUETOOTH_SCAN);
             maybeAddPermission(permissions, Manifest.permission.BLUETOOTH_ADVERTISE);
+            maybeAddPermission(permissions, Manifest.permission.ACCESS_FINE_LOCATION);
+            maybeAddPermission(permissions, Manifest.permission.ACCESS_COARSE_LOCATION);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 maybeAddPermission(permissions, Manifest.permission.POST_NOTIFICATIONS);
             }
@@ -297,7 +310,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     }
 
     private void ensureBluetoothEnabled() {
-        BluetoothAdapter adapter = meshManager.getAdapter();
+        BluetoothAdapter adapter = bluetoothAdapter;
         if (adapter != null && !adapter.isEnabled()) {
             enableBluetoothLauncher.launch(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
         } else {
@@ -306,7 +319,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     }
 
     private void ensureBluetoothEnabledForAction() {
-        BluetoothAdapter adapter = meshManager.getAdapter();
+        BluetoothAdapter adapter = bluetoothAdapter;
         if (adapter == null) {
             return;
         }
@@ -410,7 +423,7 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
             boolean requireScanPermission,
             boolean requireAdvertisePermission,
             AdapterAction action) {
-        BluetoothAdapter adapter = meshManager.getAdapter();
+        BluetoothAdapter adapter = bluetoothAdapter;
         if (adapter == null) {
             appendLog("Bluetooth adapter unavailable.");
             return;
@@ -441,14 +454,15 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     private void startListening() {
         runWithBluetoothPreconditions("listening", false, false, adapter -> {
             syncNodeId();
-            meshManager.startAccepting();
-            appendLog("MANET listener requested.");
+            startMeshService();
+            appendLog("Mesh started: BLE dual-role (no pairing) plus RFCOMM for classic/Windows peers.");
+            warnIfLocationOff();
         });
     }
 
     @SuppressLint("MissingPermission")
     private void preloadBondedDevices() {
-        BluetoothAdapter adapter = meshManager.getAdapter();
+        BluetoothAdapter adapter = bluetoothAdapter;
         if (adapter == null || !hasConnectPermission()) {
             return;
         }
@@ -519,18 +533,17 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
         }
     }
 
-    private void saveMessage(ManetMessage message, MessageStatus status, boolean sentByMe) {
-        String conversation = sentByMe ? message.getDestination() : message.getSource();
-        ChatMessageEntity entity = new ChatMessageEntity(message.getId(), conversation,
-                message.getData(), message.getSource(), System.currentTimeMillis(), status, sentByMe);
-        databaseExecutor.execute(() -> {
-            messageDao.insert(entity);
-            loadMessages();
-        });
+    private void syncNodeId() {
+        startMeshService();
     }
 
-    private void syncNodeId() {
-        meshManager.setMyNodeId(nodeIdInput.getText().toString());
+    private void warnIfLocationOff() {
+        android.location.LocationManager locationManager =
+                (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+        if (locationManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                && !locationManager.isLocationEnabled()) {
+            appendLog("Turn on Location in Android settings. Many phones will not BLE-scan while Location is off.");
+        }
     }
 
     private void resumePendingActions() {
@@ -545,51 +558,11 @@ public class MainActivity extends AppCompatActivity implements BluetoothMeshMana
     }
 
     @Override
-    public void onLog(String message) {
-        appendLog(message);
-    }
-
-    @Override
-    public void onConnectionsChanged(List<String> peers) {
-        runOnUiThread(() -> connectionView.setText(
-                peers.isEmpty() ? getString(R.string.no_connections) : joinPeers(peers)));
-    }
-
-    @Override
-    public void onMessageDelivered(ManetMessage message) {
-        appendLog("Delivered to " + message.getDestination() + ": " + message.getData());
-        boolean sentByMe = nodeIdInput != null
-                && message.getSource().equalsIgnoreCase(nodeIdInput.getText().toString().trim());
-        saveMessage(message, MessageStatus.DELIVERED, sentByMe);
-    }
-
-    @Override
-    public void onMessageStatusChanged(ManetMessage message, MessageStatus status) {
-        if (status == MessageStatus.SENDING) {
-            saveMessage(message, status, true);
-        } else {
-            databaseExecutor.execute(() -> {
-                messageDao.updateStatus(message.getId(), status);
-                loadMessages();
-            });
-        }
-    }
-
-    @Override
-    public void onMessageAcknowledged(String messageId) {
-        databaseExecutor.execute(() -> {
-            messageDao.updateStatus(messageId, MessageStatus.DELIVERED);
-            loadMessages();
-        });
-    }
-
-    @Override
     protected void onDestroy() {
         super.onDestroy();
         unregisterReceiver(discoveryReceiver);
         unregisterReceiver(meshEventReceiver);
         unregisterReceiver(meshStatusReceiver);
-        meshManager.stop();
         databaseExecutor.shutdown();
     }
 

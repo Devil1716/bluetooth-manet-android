@@ -19,4 +19,18 @@ class InMemoryRoutingManagerTest {
         assertTrue(result.isSuccess)
         assertEquals("david", nextHop)
     }
+
+    @Test fun `floods connected neighbors when no direct route exists`() = runTest {
+        val hops = mutableListOf<String>()
+        val manager = InMemoryRoutingManager(PacketForwarder { hop, _ -> hops += hop; Result.success(Unit) })
+        manager.updateNeighbor(Neighbor("bob", "Bob", -60, 80, 40, 1, System.currentTimeMillis(), true))
+        manager.updateNeighbor(Neighbor("cara", "Cara", -70, 70, 80, 1, System.currentTimeMillis(), true))
+
+        val result = manager.forward(
+            MeshPacket(sourceId = "alice", destinationId = "dave", type = PacketType.MESSAGE, encryptedPayload = byteArrayOf(9))
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals(setOf("bob", "cara"), hops.toSet())
+    }
 }
