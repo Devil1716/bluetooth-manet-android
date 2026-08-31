@@ -91,8 +91,12 @@ public class MainActivity extends AppCompatActivity {
                         int read;
                         while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
                         String name = queryDisplayName(uri);
-                        boolean sent = MeshService.sendFile(destinationInput.getText().toString(), name, output.toByteArray());
-                        String result = sent ? "Signed file transfer started: " + name : "File transfer failed. Check the event log.";
+                        syncNodeId();
+                        boolean sent = MeshService.sendFile(MainActivity.this,
+                                destinationInput.getText().toString(), name, output.toByteArray());
+                        String result = sent
+                                ? "Signed file transfer queued: " + name
+                                : "File transfer failed. Start mesh and check the event log.";
                         runOnUiThread(() -> fileProgressView.setText(result));
                     } catch (Exception e) {
                         runOnUiThread(() -> fileProgressView.setText("File error: " + e.getMessage()));
@@ -184,8 +188,16 @@ public class MainActivity extends AppCompatActivity {
             }
             if (intent.hasExtra("file_path")) {
                 lastReceivedFilePath = intent.getStringExtra("file_path");
-                fileProgressView.setText("Verified file saved. Tap to open: "
-                        + intent.getStringExtra("file_name"));
+                String fileName = intent.getStringExtra("file_name");
+                fileProgressView.setText("Verified file saved. Tap to open: " + fileName);
+                Toast.makeText(context, "File received: " + fileName, Toast.LENGTH_LONG).show();
+                new androidx.appcompat.app.AlertDialog.Builder(MainActivity.this)
+                        .setTitle("File received")
+                        .setMessage(fileName + " was verified and saved. Open it now?")
+                        .setPositiveButton("Open", (dialog, which) -> openReceivedFile(lastReceivedFilePath))
+                        .setNegativeButton("Later", null)
+                        .show();
+                loadMessages();
             } else if (intent.hasExtra("file_total")) {
                 fileProgressView.setText("File " + intent.getStringExtra("file_name") + ": "
                         + intent.getIntExtra("file_completed", 0) + "/" + intent.getIntExtra("file_total", 0));
@@ -245,10 +257,10 @@ public class MainActivity extends AppCompatActivity {
         setupToggle = findViewById(R.id.setupToggle);
         logView.setMovementMethod(new ScrollingMovementMethod());
         chatRecyclerView = findViewById(R.id.chatRecyclerView);
-        chatAdapter = new ChatAdapter();
         LinearLayoutManager layoutManager = new LinearLayoutManager(this);
         layoutManager.setStackFromEnd(true);
         chatRecyclerView.setLayoutManager(layoutManager);
+        chatAdapter = new ChatAdapter(this::openReceivedFile);
         chatRecyclerView.setAdapter(chatAdapter);
         nodeIdInput.setText(getSharedPreferences("mesh", MODE_PRIVATE).getString("node_id", "A"));
 
@@ -303,6 +315,7 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Enter the destination node ID before sending a file.", Toast.LENGTH_SHORT).show();
                 return;
             }
+            syncNodeId();
             filePickerLauncher.launch("*/*");
         });
     }
@@ -604,8 +617,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openReceivedFile() {
-        if (lastReceivedFilePath == null) return;
-        File file = new File(lastReceivedFilePath);
+        openReceivedFile(lastReceivedFilePath);
+    }
+
+    private void openReceivedFile(String path) {
+        if (path == null || path.trim().isEmpty()) return;
+        File file = new File(path);
         if (!file.exists()) {
             Toast.makeText(this, "File is no longer on disk.", Toast.LENGTH_SHORT).show();
             return;

@@ -4,6 +4,7 @@ import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -20,6 +21,15 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private static final int HEADER = 0;
     private static final int MESSAGE = 1;
     private final List<Object> rows = new ArrayList<>();
+    private final FileOpenListener fileOpenListener;
+
+    public interface FileOpenListener {
+        void open(String path);
+    }
+
+    public ChatAdapter(FileOpenListener fileOpenListener) {
+        this.fileOpenListener = fileOpenListener;
+    }
 
     public void setMessages(List<ChatMessageEntity> messages) {
         rows.clear();
@@ -57,7 +67,8 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
         ChatMessageEntity message = (ChatMessageEntity) rows.get(position);
         MessageHolder messageHolder = (MessageHolder) holder;
-        messageHolder.text.setText(message.text);
+        String filePath = MeshFileStore.embeddedPath(message.text);
+        messageHolder.text.setText(MeshFileStore.displayName(message.text));
         String metadata = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date(message.timestamp));
         if (message.sentByMe) metadata += "  ·  " + message.status.name();
         else metadata += "  ·  verified";
@@ -66,6 +77,13 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         params.gravity = message.sentByMe ? Gravity.END : Gravity.START;
         messageHolder.bubble.setLayoutParams(params);
         messageHolder.bubble.setBackgroundResource(message.sentByMe ? R.drawable.bg_bubble_out : R.drawable.bg_bubble_in);
+        if (filePath != null && fileOpenListener != null) {
+            messageHolder.openButton.setVisibility(View.VISIBLE);
+            messageHolder.openButton.setOnClickListener(v -> fileOpenListener.open(filePath));
+        } else {
+            messageHolder.openButton.setVisibility(View.GONE);
+            messageHolder.openButton.setOnClickListener(null);
+        }
     }
 
     @Override public int getItemCount() { return rows.size(); }
@@ -79,11 +97,13 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         final LinearLayout bubble;
         final TextView text;
         final TextView meta;
+        final Button openButton;
         MessageHolder(View itemView) {
             super(itemView);
             bubble = itemView.findViewById(R.id.messageBubble);
             text = itemView.findViewById(R.id.messageText);
             meta = itemView.findViewById(R.id.messageMeta);
+            openButton = itemView.findViewById(R.id.openFileButton);
         }
     }
 }

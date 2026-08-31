@@ -32,5 +32,22 @@
             android:layout_marginTop="4dp"
             android:textColor="@color/mesh_muted"
             android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/openFileButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_bubble_out"
+            android:minHeight="0dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:text="@string/open_file"
+            android:textAllCaps="false"
+            android:textColor="@color/mesh_text"
+            android:textSize="13sp"
+            android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>

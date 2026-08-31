@@ -405,9 +405,11 @@ public class BluetoothMeshManager {
                 safeName, total, contents.length, fileSha,
                 signer.sign(MeshIntegrity.fileMetaCanon(id, myNodeId, trimmedDestination, safeName, total, contents.length, fileSha)));
         OutgoingFile outgoing = new OutgoingFile(meta);
+        outgoingFiles.put(id, outgoing);
         forwardMessage(signedHello(), null);
         listener.onLog("Sending signed file " + safeName + " (" + contents.length + " bytes, " + total + " chunks).");
         int delivered = 0;
+        int chunksDelivered = 0;
         if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
         try { Thread.sleep(40); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
         if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
@@ -421,14 +423,16 @@ public class BluetoothMeshManager {
                     ManetMessage.DEFAULT_TTL, safeName, index, total, contents.length, chunkSha, data,
                     signer.sign(MeshIntegrity.fileChunkCanon(id, myNodeId, trimmedDestination, index, total, chunkSha)));
             outgoing.chunks.add(packet);
-            if (forwardBytes(packet.toBytes(), null) > 0) delivered++;
+            if (forwardBytes(packet.toBytes(), null) > 0) {
+                delivered++;
+                chunksDelivered++;
+            }
             listener.onFileProgress(id, index + 1, total, safeName);
             if (index < total - 1) {
                 try { Thread.sleep(35); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             }
         }
-        outgoingFiles.put(id, outgoing);
-        boolean sent = delivered > 0;
+        boolean sent = chunksDelivered > 0;
         listener.onLog(sent
                 ? "File " + safeName + " queued on the mesh with integrity checks."
                 : "File " + safeName + " could not be written to any peer.");
@@ -472,6 +476,7 @@ public class BluetoothMeshManager {
                     handleFileMeta(pending.pendingMeta, fromAddress);
                 }
             }
+            requestMissingChunksForSource(node);
         }
         peerNodeIds.put(fromAddress, node);
         listener.onLog("Peer " + fromAddress + " is node " + node + (publicKey != null ? " (key verified)" : ""));
@@ -493,7 +498,8 @@ public class BluetoothMeshManager {
             handleFileMeta(packet, fromAddress);
             return;
         }
-        if (!seenFileChunks.add(packet.id + ":" + packet.index)) {
+        String chunkKey = packet.id + ":" + packet.index;
+        if (seenFileChunks.contains(chunkKey)) {
             maybeRelayFile(packet, fromAddress);
             return;
         }
@@ -501,13 +507,25 @@ public class BluetoothMeshManager {
             listener.onLog("Dropped unsigned file chunk for " + packet.fileName);
             return;
         }
+        if (peerPublicKeys.get(packet.source.toUpperCase()) == null) {
+            listener.onLog("Waiting for " + packet.source + " signing key before accepting chunk "
+                    + packet.index + " of " + packet.fileName);
+            maybeRelayFile(packet, fromAddress);
+            return;
+        }
         byte[] raw = android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT);
         if (!MeshIntegrity.sha256Hex(raw).equalsIgnoreCase(packet.digest)) {
             listener.onLog("Dropped tampered file chunk " + packet.index + " of " + packet.fileName);
+            seenFileChunks.add(chunkKey);
             return;
         }
         if (!verifyFileChunk(packet)) {
             listener.onLog("Dropped file chunk with invalid signature: " + packet.fileName);
+            seenFileChunks.add(chunkKey);
+            return;
+        }
+        if (!seenFileChunks.add(chunkKey)) {
+            maybeRelayFile(packet, fromAddress);
             return;
         }
         FileTransferBuffer buffer = bufferFor(packet);
@@ -593,7 +611,7 @@ public class BluetoothMeshManager {
             listener.onLog("Saved verified file to " + saved.getAbsolutePath());
             listener.onFileReceived(buffer.fileName, saved.getAbsolutePath());
             listener.onMessageDelivered(new ManetMessage(packet.id, buffer.source, myNodeId,
-                    packet.ttl, "Received file: " + buffer.fileName));
+                    packet.ttl, MeshFileStore.chatLabel(buffer.fileName, saved.getAbsolutePath())));
         } catch (IOException e) {
             listener.onLog("File save failed: " + e.getMessage());
         }
@@ -605,6 +623,15 @@ public class BluetoothMeshManager {
         if (buffer.retry != null) handler.removeCallbacks(buffer.retry);
         buffer.retry = () -> requestMissingChunks(transferId);
         handler.postDelayed(buffer.retry, 2500);
+    }
+
+    private void requestMissingChunksForSource(String sourceNode) {
+        for (Map.Entry<String, FileTransferBuffer> entry : fileBuffers.entrySet()) {
+            FileTransferBuffer buffer = entry.getValue();
+            if (buffer.metaOk && sourceNode.equalsIgnoreCase(buffer.source)) {
+                requestMissingChunks(entry.getKey());
+            }
+        }
     }
 
     private void requestMissingChunks(String transferId) {

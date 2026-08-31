@@ -24,4 +24,5 @@
     <string name="show_setup">Show setup and log</string>
     <string name="hide_setup">Hide setup and log</string>
     <string name="no_file_transfer">No file transfer</string>
+    <string name="open_file">Open file</string>
 </resources>

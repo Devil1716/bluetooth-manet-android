@@ -10,6 +10,28 @@ import java.io.IOException;
 public final class MeshFileStore {
     private MeshFileStore() { }
 
+    private static final char PATH_SEPARATOR = '\u0000';
+
+    public static String chatLabel(String fileName, String path) {
+        return "📎 " + (fileName == null ? "file" : fileName) + PATH_SEPARATOR + path;
+    }
+
+    public static String displayName(String text) {
+        if (text == null) return "";
+        int separator = text.indexOf(PATH_SEPARATOR);
+        return separator >= 0 ? text.substring(0, separator) : text;
+    }
+
+    public static String embeddedPath(String text) {
+        if (text == null) return null;
+        int separator = text.indexOf(PATH_SEPARATOR);
+        return separator >= 0 ? text.substring(separator + 1) : null;
+    }
+
+    public static boolean isFileMessage(String text) {
+        return text != null && text.startsWith("📎 ") && text.indexOf(PATH_SEPARATOR) > 0;
+    }
+
     public static File save(Context context, String fileName, byte[] bytes) throws IOException {
         File directory = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "received");
         if (!directory.exists() && !directory.mkdirs()) {

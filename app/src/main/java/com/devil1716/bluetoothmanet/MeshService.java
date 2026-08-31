@@ -43,6 +43,13 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private boolean foregroundReady;
     private String nodeId = "NODE";
     private final Set<String> rfcommTargets = ConcurrentHashMap.newKeySet();
+    private String pendingSendDestination;
+    private String pendingSendName;
+    private java.io.File pendingSendCache;
+    private int pendingSendAttempts;
+    private final Runnable pendingSendRetry = new Runnable() {
+        @Override public void run() { processPendingFileSend(false); }
+    };
     private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (!BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) return;
@@ -123,6 +130,13 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             manager.connectToDevice(manager.getAdapter().getRemoteDevice(address));
             if (bleTransport != null) bleTransport.connect(address);
         }
+        if (intent != null && intent.hasExtra("send_file_cache")) {
+            queuePendingFileSend(
+                    intent.getStringExtra("send_file_dest"),
+                    intent.getStringExtra("send_file_name"),
+                    new java.io.File(intent.getStringExtra("send_file_cache")));
+        }
+        processPendingFileSend(false);
         ensureTransportReady();
         return START_STICKY;
     }
@@ -147,9 +161,75 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         else context.startService(intent);
     }
 
-    public static boolean sendFile(String destination, String fileName, byte[] contents) {
+    public static boolean sendFile(android.content.Context context, String destination, String fileName, byte[] contents) {
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
+                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return false;
+        if (contents == null || contents.length == 0) return false;
         BluetoothMeshManager current = activeManager;
-        return current != null && current.sendFile(destination, fileName, contents);
+        if (current != null && current.sendFile(destination, fileName, contents)) {
+            return true;
+        }
+        java.io.File cache = new java.io.File(context.getCacheDir(), "pending-mesh-send.bin");
+        try (java.io.FileOutputStream output = new java.io.FileOutputStream(cache)) {
+            output.write(contents);
+        } catch (java.io.IOException e) {
+            return false;
+        }
+        Intent intent = new Intent(context, MeshService.class)
+                .putExtra("send_file_cache", cache.getAbsolutePath())
+                .putExtra("send_file_dest", destination)
+                .putExtra("send_file_name", fileName);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
+        else context.startService(intent);
+        return true;
+    }
+
+    private void queuePendingFileSend(String destination, String fileName, java.io.File cache) {
+        pendingSendDestination = destination;
+        pendingSendName = fileName;
+        pendingSendCache = cache;
+        pendingSendAttempts = 0;
+        handler.removeCallbacks(pendingSendRetry);
+    }
+
+    private void processPendingFileSend(boolean fromPeerEvent) {
+        if (manager == null || pendingSendCache == null || !pendingSendCache.exists()) return;
+        try {
+            byte[] bytes = java.nio.file.Files.readAllBytes(pendingSendCache.toPath());
+            if (manager.sendFile(pendingSendDestination, pendingSendName, bytes)) {
+                clearPendingFileSend(true);
+                return;
+            }
+        } catch (java.io.IOException e) {
+            status("Could not read queued file: " + e.getMessage());
+            clearPendingFileSend(false);
+            return;
+        }
+        pendingSendAttempts++;
+        if (pendingSendAttempts >= 20) {
+            status("File send failed. Start mesh, wait for a signed link, then try again.");
+            clearPendingFileSend(false);
+            return;
+        }
+        if (!fromPeerEvent) {
+            status("Waiting for mesh link to send " + pendingSendName + "...");
+        }
+        handler.removeCallbacks(pendingSendRetry);
+        handler.postDelayed(pendingSendRetry, 2000L);
+    }
+
+    private void clearPendingFileSend(boolean sent) {
+        handler.removeCallbacks(pendingSendRetry);
+        if (pendingSendCache != null) {
+            pendingSendCache.delete();
+        }
+        pendingSendCache = null;
+        pendingSendDestination = null;
+        pendingSendName = null;
+        pendingSendAttempts = 0;
+        if (sent) {
+            status("Signed file transfer started.");
+        }
     }
 
     private void ensureTransportReady() {
@@ -200,6 +280,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
                 .putExtra("peer_count", count)
                 .putStringArrayListExtra("peers", peers == null ? new ArrayList<String>() : new ArrayList<>(peers));
         sendBroadcast(intent);
+        processPendingFileSend(true);
     }
 
     @Override public void onMessageDelivered(ManetMessage message) {
