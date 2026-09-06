@@ -1,5 +1,13 @@
 <resources>
     <string name="app_name">Mesh</string>
+    <string name="stay_connected">Let\'s Stay Connected</string>
+    <string name="search_hint">Search...</string>
+    <string name="story_add">Add</string>
+    <string name="no_conversations">No conversations yet. Add a nearby node to start chatting.</string>
+    <string name="tap_to_chat">Tap to start a conversation</string>
+    <string name="new_chat">New chat</string>
+    <string name="open_chat">Open chat</string>
+    <string name="legacy_console">Classic mesh console</string>
     <string name="subtitle">Signed Bluetooth mesh chat. Nearby phones link over BLE; messages and files are authenticated end to end.</string>
     <string name="node_id_hint">Your node ID</string>
     <string name="enable_bluetooth">Enable Bluetooth</string>

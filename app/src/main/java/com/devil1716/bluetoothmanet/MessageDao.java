@@ -12,6 +12,9 @@ public interface MessageDao {
     @Query("SELECT * FROM messages ORDER BY conversationId ASC, timestamp ASC")
     List<ChatMessageEntity> getAll();
 
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
+    List<ChatMessageEntity> getConversation(String conversationId);
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     void insert(ChatMessageEntity message);
 
