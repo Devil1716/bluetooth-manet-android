@@ -16,7 +16,7 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 - Language: Java + Kotlin
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.3.3`
+- Current release: `v1.3.4`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
