@@ -30,13 +30,11 @@ import androidx.core.content.FileProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.devil1716.bluetoothmanet.update.AppUpdater;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,16 +43,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String LATEST_RELEASE_API =
-            "https://api.github.com/repos/Devil1716/bluetooth-manet-android/releases/latest";
-    private static final String LATEST_RELEASE_PAGE =
-            "https://github.com/Devil1716/bluetooth-manet-android/releases/latest";
-
     private interface AdapterAction {
         void run(BluetoothAdapter adapter);
     }
@@ -299,7 +289,7 @@ public class MainActivity extends AppCompatActivity {
         discoverableButton.setOnClickListener(v -> requestDiscoverableMode());
         discoverButton.setOnClickListener(v -> startDiscovery());
         listenButton.setOnClickListener(v -> startListening());
-        updateButton.setOnClickListener(v -> openGithubUpdate());
+        updateButton.setOnClickListener(v -> startAppUpdate());
         sendButton.setOnClickListener(v -> {
             syncNodeId();
             boolean sent = MeshService.sendMessage(this, destinationInput.getText().toString(), messageInput.getText().toString());
@@ -381,59 +371,22 @@ public class MainActivity extends AppCompatActivity {
                 });
     }
 
-    private void openGithubUpdate() {
+    private void startAppUpdate() {
         appendLog("Checking GitHub for the latest APK...");
-        new Thread(() -> {
-            try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(LATEST_RELEASE_API).openConnection();
-                connection.setRequestMethod("GET");
-                connection.setRequestProperty("Accept", "application/vnd.github+json");
-                connection.setConnectTimeout(15000);
-                connection.setReadTimeout(15000);
-
-                int responseCode = connection.getResponseCode();
-                if (responseCode < 200 || responseCode >= 300) {
-                    throw new IllegalStateException("GitHub API returned " + responseCode);
-                }
-
-                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-                StringBuilder payload = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    payload.append(line);
-                }
-                reader.close();
-                connection.disconnect();
-
-                JSONObject release = new JSONObject(payload.toString());
-                String tagName = release.optString("tag_name", "latest");
-                JSONArray assets = release.optJSONArray("assets");
-                String apkUrl = null;
-
-                if (assets != null) {
-                    for (int index = 0; index < assets.length(); index++) {
-                        JSONObject asset = assets.getJSONObject(index);
-                        if ("app-debug.apk".equals(asset.optString("name"))) {
-                            apkUrl = asset.optString("browser_download_url");
-                            break;
-                        }
+        AppUpdater.checkAndInstall(this, BuildConfig.VERSION_NAME, message ->
+                runOnUiThread(() -> {
+                    appendLog(message);
+                    if (!message.startsWith("Downloading update")) {
+                        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
                     }
-                }
+                }));
+    }
 
-                final String resolvedUrl = apkUrl != null && !apkUrl.isEmpty() ? apkUrl : LATEST_RELEASE_PAGE;
-                runOnUiThread(() -> {
-                    appendLog("Opening GitHub release " + tagName + "...");
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(resolvedUrl)));
-                    Toast.makeText(this, "Opening the latest release in your browser.", Toast.LENGTH_LONG).show();
-                });
-            } catch (Exception exception) {
-                runOnUiThread(() -> {
-                    appendLog("Update check failed. Opening releases page instead.");
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(LATEST_RELEASE_PAGE)));
-                    Toast.makeText(this, "Could not resolve the APK directly. Opening releases page.", Toast.LENGTH_LONG).show();
-                });
-            }
-        }).start();
+    @Override
+    protected void onResume() {
+        super.onResume();
+        AppUpdater.installPendingIfReady(this, message ->
+                runOnUiThread(() -> appendLog(message)));
     }
 
     @SuppressLint("MissingPermission")

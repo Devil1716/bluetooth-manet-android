@@ -41,6 +41,8 @@ fun MeshSetupSheet(
     connectionsLabel: String,
     logs: String,
     classicPeers: List<PeerDevice>,
+    updateStatus: String,
+    updateBusy: Boolean,
     onNodeIdChange: (String) -> Unit,
     onNewChatChange: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -125,8 +127,16 @@ fun MeshSetupSheet(
                     Text("${peer.name}\n${peer.address}", color = MeshWhite)
                 }
             }
-            TextButton(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth()) {
-                Text("Check update", color = MeshMint)
+            Button(
+                onClick = onCheckUpdate,
+                enabled = !updateBusy,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A), contentColor = MeshWhite)
+            ) {
+                Text(if (updateBusy) "Updating…" else "Check update")
+            }
+            if (updateStatus.isNotBlank()) {
+                Text(updateStatus, color = MeshMint, fontSize = 13.sp)
             }
             TextButton(onClick = onOpenLegacy, modifier = Modifier.fillMaxWidth()) {
                 Text("Classic mesh console", color = MeshMuted)

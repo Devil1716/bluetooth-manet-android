@@ -72,6 +72,8 @@ fun MeshApp(
                 connectionsLabel = state.connectionsLabel,
                 logs = state.logs,
                 classicPeers = state.classicPeers,
+                updateStatus = state.updateStatus,
+                updateBusy = state.updateBusy,
                 onNodeIdChange = viewModel::setNodeId,
                 onNewChatChange = viewModel::setNewChatNodeId,
                 onDismiss = viewModel::closeSetup,

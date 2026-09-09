@@ -26,14 +26,9 @@ import com.devil1716.bluetoothmanet.BuildConfig
 import com.devil1716.bluetoothmanet.MainActivity
 import com.devil1716.bluetoothmanet.MeshService
 import com.devil1716.bluetoothmanet.PeerDevice
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
+import com.devil1716.bluetoothmanet.update.AppUpdater
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -203,7 +198,7 @@ class ComposeMeshActivity : ComponentActivity() {
                         }
                     },
                     openFile = { path -> openReceivedFile(path) },
-                    checkUpdate = { openGithubUpdate() },
+                    checkUpdate = { startAppUpdate() },
                     openLegacyConsole = {
                         startActivity(Intent(this, MainActivity::class.java))
                     }
@@ -330,48 +325,29 @@ class ComposeMeshActivity : ComponentActivity() {
         }
     }
 
-    private fun openGithubUpdate() {
-        viewModel.appendLog("Checking GitHub for the latest APK...")
-        Thread {
-            try {
-                val connection = (URL(LATEST_RELEASE_API).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    connectTimeout = 15_000
-                    readTimeout = 15_000
-                }
-                if (connection.responseCode !in 200..299) {
-                    throw IllegalStateException("GitHub API returned ${connection.responseCode}")
-                }
-                val payload = BufferedReader(InputStreamReader(connection.inputStream)).readText()
-                connection.disconnect()
-                val release = JSONObject(payload)
-                val tagName = release.optString("tag_name", "latest")
-                val assets: JSONArray? = release.optJSONArray("assets")
-                var apkUrl: String? = null
-                if (assets != null) {
-                    for (index in 0 until assets.length()) {
-                        val asset = assets.getJSONObject(index)
-                        if (asset.optString("name") == "app-debug.apk") {
-                            apkUrl = asset.optString("browser_download_url")
-                            break
-                        }
-                    }
-                }
-                val resolved = if (apkUrl.isNullOrEmpty()) LATEST_RELEASE_PAGE else apkUrl
-                runOnUiThread {
-                    viewModel.appendLog("Opening GitHub release $tagName...")
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(resolved)))
-                    Toast.makeText(this, "Opening the latest release in your browser.", Toast.LENGTH_LONG).show()
-                }
-            } catch (_: Exception) {
-                runOnUiThread {
-                    viewModel.appendLog("Update check failed. Opening releases page instead.")
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(LATEST_RELEASE_PAGE)))
-                    Toast.makeText(this, "Could not resolve the APK directly. Opening releases page.", Toast.LENGTH_LONG).show()
+    private fun startAppUpdate() {
+        viewModel.setUpdateStatus("Checking GitHub for the latest APK...", busy = true)
+        AppUpdater.checkAndInstall(this, BuildConfig.VERSION_NAME) { message ->
+            runOnUiThread {
+                val done = message.startsWith("Update failed")
+                    || message.startsWith("Already on")
+                    || message.startsWith("Download complete")
+                    || message.startsWith("Opening installer")
+                    || message.startsWith("Allow Mesh")
+                    || message.startsWith("Update already")
+                viewModel.setUpdateStatus(message, busy = !done)
+                if (!message.startsWith("Downloading update")) {
+                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
                 }
             }
-        }.start()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppUpdater.installPendingIfReady(this) { message ->
+            runOnUiThread { viewModel.setUpdateStatus(message, busy = false) }
+        }
     }
 
     override fun onDestroy() {
@@ -382,12 +358,5 @@ class ComposeMeshActivity : ComponentActivity() {
         }
         ioExecutor.shutdown()
         super.onDestroy()
-    }
-
-    companion object {
-        private const val LATEST_RELEASE_API =
-            "https://api.github.com/repos/Devil1716/bluetooth-manet-android/releases/latest"
-        private const val LATEST_RELEASE_PAGE =
-            "https://github.com/Devil1716/bluetooth-manet-android/releases/latest"
     }
 }

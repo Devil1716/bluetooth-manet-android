@@ -83,6 +83,16 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun setClassicPeers(peers: List<PeerDevice>) = _uiState.update { it.copy(classicPeers = peers) }
 
+    fun setUpdateStatus(status: String, busy: Boolean? = null) {
+        _uiState.update {
+            it.copy(
+                updateStatus = status,
+                updateBusy = busy ?: it.updateBusy
+            )
+        }
+        if (status.isNotBlank()) appendLog(status)
+    }
+
     fun onMeshStatus(message: String?, peers: List<String>?, fileProgress: String?) {
         if (peers != null) livePeerLabels = peers
         _uiState.update { state ->

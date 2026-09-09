@@ -37,7 +37,9 @@ data class MeshUiState(
     val logs: String = "Logs will appear here...\n",
     val classicPeers: List<PeerDevice> = emptyList(),
     val composerText: String = "",
-    val newChatNodeId: String = ""
+    val newChatNodeId: String = "",
+    val updateStatus: String = "",
+    val updateBusy: Boolean = false
 ) {
     val openConversation: ConversationPreview?
         get() = openConversationId?.let { id -> conversations.firstOrNull { it.id.equals(id, true) } }
@@ -57,14 +59,17 @@ fun formatInboxTime(timestamp: Long, now: Long = System.currentTimeMillis()): St
     if (timestamp <= 0L) return ""
     val diff = now - timestamp
     if (diff < 60_000L) return "Just Now"
-    val nowCal = Calendar.getInstance()
+    val nowCal = Calendar.getInstance().apply { timeInMillis = now }
     val thenCal = Calendar.getInstance().apply { timeInMillis = timestamp }
     if (nowCal.get(Calendar.YEAR) == thenCal.get(Calendar.YEAR)
         && nowCal.get(Calendar.DAY_OF_YEAR) == thenCal.get(Calendar.DAY_OF_YEAR)
     ) {
         return SimpleDateFormat("h:mm a", Locale.US).format(Date(timestamp)).lowercase(Locale.US)
     }
-    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+    val yesterday = Calendar.getInstance().apply {
+        timeInMillis = now
+        add(Calendar.DAY_OF_YEAR, -1)
+    }
     if (yesterday.get(Calendar.YEAR) == thenCal.get(Calendar.YEAR)
         && yesterday.get(Calendar.DAY_OF_YEAR) == thenCal.get(Calendar.DAY_OF_YEAR)
     ) {
