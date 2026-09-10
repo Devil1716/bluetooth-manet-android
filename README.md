@@ -14,6 +14,7 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 
 - Package: `com.devil1716.bluetoothmanet`
 - Language: Java + Kotlin
+- Launcher: `ComposeMeshActivity` (legacy XML console is `MainActivity`)
 - Min SDK: 21
 - Target / Compile SDK: 34
 - Current release: `v1.3.4`
@@ -24,14 +25,11 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 1. Open the project in Android Studio.
 2. Build and run on at least 2 Android phones.
 3. On each phone:
-   - Allow Bluetooth, notifications, and Location (many OEMs will not BLE-scan with Location off).
-   - Tap `Enable Bluetooth` if needed.
-   - Give each phone a different node ID (`A`, `B`, `C`).
-   - Tap `Start Mesh`.
-   - Wait for the event log to show a BLE link. Pairing is not required for phone-to-phone BLE.
-4. Send a message or file using the other phone's node ID.
-
-Manual `Connect Selected Peer` is only needed for classic RFCOMM / Windows. BLE peers appear on their own.
+   - The home screen shows your unique node ID (tap to copy) and a first-run checklist.
+   - Allow Bluetooth (and Location if the banner asks). Location is only so Android can BLE-scan.
+   - Tap **Start Mesh** if the mesh did not auto-start after permissions. Nearby phones link automatically over BLE — no pairing.
+   - Share your node ID with the other phone, or tap a neighbor under **Nearby** to open chat.
+4. Send a message or file. Classic RFCOMM (Enable / Discoverable / Find peers) lives under **Setup → Windows / paired devices** and is only for the Windows node.
 
 ## Multi-hop test
 

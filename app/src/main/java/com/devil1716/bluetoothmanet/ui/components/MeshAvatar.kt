@@ -11,6 +11,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -28,7 +30,12 @@ fun MeshAvatar(
     online: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    Box(modifier = modifier.size(size), contentAlignment = Alignment.BottomEnd) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .semantics { contentDescription = if (online) "$name, online" else name },
+        contentAlignment = Alignment.BottomEnd
+    ) {
         Box(
             modifier = Modifier
                 .size(size)

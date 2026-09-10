@@ -21,7 +21,12 @@ data class MeshActions(
     val pickFile: (String) -> Unit = {},
     val openFile: (String) -> Unit = {},
     val checkUpdate: () -> Unit = {},
-    val openLegacyConsole: () -> Unit = {}
+    val openLegacyConsole: () -> Unit = {},
+    val copyNodeId: () -> Unit = {},
+    val shareNodeId: () -> Unit = {},
+    val requestPermissions: () -> Unit = {},
+    val openAppSettings: () -> Unit = {},
+    val openLocationSettings: () -> Unit = {}
 )
 
 @Composable
@@ -39,7 +44,8 @@ fun MeshApp(
                 conversation = conversation,
                 messages = state.threadMessages,
                 composerText = state.composerText,
-                fileProgress = state.fileProgress,
+                fileTransfer = state.fileTransfer,
+                meshStarted = state.meshStarted,
                 onComposerChange = viewModel::setComposerText,
                 onBack = viewModel::closeThread,
                 onSend = {
@@ -53,14 +59,29 @@ fun MeshApp(
             ChatsHomeScreen(
                 searchQuery = state.searchQuery,
                 conversations = state.filteredConversations,
-                stories = state.stories,
+                nearbyPeers = state.stories,
+                nodeId = state.nodeId,
+                statusChip = state.statusChip,
+                livePeerIds = state.livePeerIds,
+                meshStarted = state.meshStarted,
+                permission = state.permission,
+                nodeIdCopied = state.nodeIdCopied,
+                showChecklist = shouldShowFirstRunChecklist(
+                    conversationCount = state.conversations.size,
+                    meshStarted = state.meshStarted,
+                    permissionsReady = state.permission.allGranted,
+                    bluetoothOn = !state.permission.bluetoothOff
+                ),
                 onSearchChange = viewModel::setSearchQuery,
                 onOpenSetup = viewModel::openSetup,
-                onAdd = {
-                    viewModel.openSetup()
-                    actions.startMesh()
-                },
-                onStoryClick = { viewModel.openThread(it.id) },
+                onCopyNodeId = actions.copyNodeId,
+                onShareNodeId = actions.shareNodeId,
+                onStartMesh = actions.startMesh,
+                onRequestPermissions = actions.requestPermissions,
+                onOpenAppSettings = actions.openAppSettings,
+                onOpenLocationSettings = actions.openLocationSettings,
+                onEnableBluetooth = actions.enableBluetooth,
+                onNearbyClick = { viewModel.openThread(it.id) },
                 onConversationClick = { viewModel.openThread(it.id) }
             )
         }

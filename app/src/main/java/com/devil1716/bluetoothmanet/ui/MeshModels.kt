@@ -23,23 +23,62 @@ data class StoryPeer(
     val online: Boolean
 )
 
+enum class FileTransferPhase {
+    NONE,
+    SENDING,
+    SUCCESS,
+    FAILED
+}
+
+data class FileTransferUi(
+    val phase: FileTransferPhase = FileTransferPhase.NONE,
+    val fileName: String = "",
+    val sizeLabel: String = "",
+    val completed: Int = 0,
+    val total: Int = 0,
+    val error: String = ""
+) {
+    val progress: Float
+        get() = if (total > 0) (completed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+    val visible: Boolean
+        get() = phase != FileTransferPhase.NONE
+}
+
+data class PermissionUi(
+    val allGranted: Boolean = false,
+    val missingCount: Int = 0,
+    val permanentlyDenied: Boolean = false,
+    val locationServicesOff: Boolean = false,
+    val bluetoothOff: Boolean = false,
+    val showRationale: Boolean = true
+) {
+    val readyForMesh: Boolean get() = allGranted && !bluetoothOff
+}
+
 data class MeshUiState(
-    val nodeId: String = "A",
+    val nodeId: String = "",
     val searchQuery: String = "",
     val conversations: List<ConversationPreview> = emptyList(),
     val stories: List<StoryPeer> = emptyList(),
     val threadMessages: List<ChatMessageEntity> = emptyList(),
     val openConversationId: String? = null,
     val sheetVisible: Boolean = false,
+    val meshStarted: Boolean = false,
     val meshStatus: String = "Mesh idle",
+    val statusChip: String = "Idle",
+    val livePeerIds: List<String> = emptyList(),
     val connectionsLabel: String = "No mesh links yet. Tap Start Mesh on both phones.",
     val fileProgress: String = "No file transfer",
+    val fileTransfer: FileTransferUi = FileTransferUi(),
     val logs: String = "Logs will appear here...\n",
     val classicPeers: List<PeerDevice> = emptyList(),
     val composerText: String = "",
     val newChatNodeId: String = "",
     val updateStatus: String = "",
-    val updateBusy: Boolean = false
+    val updateBusy: Boolean = false,
+    val permission: PermissionUi = PermissionUi(),
+    val nodeIdCopied: Boolean = false
 ) {
     val openConversation: ConversationPreview?
         get() = openConversationId?.let { id -> conversations.firstOrNull { it.id.equals(id, true) } }

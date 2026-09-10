@@ -20,6 +20,10 @@ val MeshAddCircle = Color(0x66FFFFFF)
 val MeshIncoming = Color(0xFF1C1C1E)
 val MeshOutgoing = Color(0xFF5E5A8A)
 val MeshComposer = Color(0xFF1C1C1E)
+val MeshSurface = Color(0xFF161618)
+val MeshDanger = Color(0xFFFF453A)
+val MeshChipIdle = Color(0x33FFFFFF)
+val MeshChipLive = Color(0x3320C997)
 
 val HeaderGradient = Brush.linearGradient(
     colors = listOf(Color(0xFFA8D4C8), Color(0xFFB7C4D6), Color(0xFFC5B4DC)),

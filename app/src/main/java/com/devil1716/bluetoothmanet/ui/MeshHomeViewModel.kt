@@ -2,6 +2,7 @@ package com.devil1716.bluetoothmanet.ui
 
 import android.app.Application
 import android.content.Context
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import com.devil1716.bluetoothmanet.AppDatabase
 import com.devil1716.bluetoothmanet.ChatMessageEntity
@@ -12,21 +13,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 class MeshHomeViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getInstance(application)
     private val prefs = application.getSharedPreferences("mesh", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private val _uiState = MutableStateFlow(
-        MeshUiState(nodeId = prefs.getString("node_id", "A") ?: "A")
-    )
+    private val _uiState = MutableStateFlow(MeshUiState(nodeId = resolveOrCreateNodeId()))
     val uiState: StateFlow<MeshUiState> = _uiState.asStateFlow()
 
     private var messages: List<ChatMessageEntity> = emptyList()
@@ -51,8 +52,40 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun setNodeId(nodeId: String) {
         val trimmed = nodeId.trim().uppercase()
-        prefs.edit().putString("node_id", trimmed).apply()
         _uiState.update { it.copy(nodeId = trimmed) }
+        if (trimmed.isNotEmpty()) prefs.edit().putString("node_id", trimmed).apply()
+    }
+
+    fun markNodeIdCopied() {
+        _uiState.update { it.copy(nodeIdCopied = true) }
+        scope.launch {
+            delay(2_000)
+            _uiState.update { it.copy(nodeIdCopied = false) }
+        }
+    }
+
+    fun setPermissionState(permission: PermissionUi) {
+        _uiState.update { it.copy(permission = permission) }
+    }
+
+    fun markMeshStarted() {
+        _uiState.update { state ->
+            val chip = meshStatusChipLabel(true, state.livePeerIds)
+            state.copy(
+                meshStarted = true,
+                meshStatus = if (state.livePeerIds.isEmpty()) "Mesh running" else state.meshStatus,
+                statusChip = chip
+            )
+        }
+    }
+
+    fun setFileTransfer(transfer: FileTransferUi) {
+        _uiState.update {
+            it.copy(
+                fileTransfer = transfer,
+                fileProgress = transfer.fileName.ifBlank { it.fileProgress }
+            )
+        }
     }
 
     fun setComposerText(text: String) = _uiState.update { it.copy(composerText = text) }
@@ -94,24 +127,45 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onMeshStatus(message: String?, peers: List<String>?, fileProgress: String?) {
+        onMeshStatus(message, peers, fileProgress, null)
+    }
+
+    fun onMeshStatus(
+        message: String?,
+        peers: List<String>?,
+        fileProgress: String?,
+        transferUpdate: FileTransferUi?
+    ) {
         if (peers != null) livePeerLabels = peers
         _uiState.update { state ->
+            val peerIds = if (peers != null) parsePeerNodeIds(peers) else state.livePeerIds
+            val started = state.meshStarted || !peerIds.isEmpty()
+            val transfer = when {
+                transferUpdate != null -> transferUpdate
+                fileProgress != null -> fileTransferFromLog(fileProgress, state.fileTransfer)
+                else -> fileTransferFromLog(message, state.fileTransfer)
+            }
             state.copy(
+                meshStarted = started,
                 meshStatus = when {
-                    peers == null -> message ?: state.meshStatus
-                    peers.isEmpty() -> "Mesh idle"
-                    else -> "${peers.size} signed link(s)"
+                    peers == null && !started -> message ?: state.meshStatus
+                    peerIds.isEmpty() && started -> "Mesh running"
+                    peerIds.isEmpty() -> "Mesh idle"
+                    else -> "${peerIds.size} signed link(s)"
                 },
+                statusChip = meshStatusChipLabel(started, peerIds),
+                livePeerIds = peerIds,
                 connectionsLabel = when {
                     peers == null -> state.connectionsLabel
-                    peers.isEmpty() -> "No mesh links yet. Tap Start Mesh on both phones."
-                    else -> peers.joinToString("\n")
+                    peerIds.isEmpty() -> "No mesh links yet. Tap Start Mesh on both phones."
+                    else -> peerIds.joinToString(" · ")
                 },
                 fileProgress = fileProgress ?: state.fileProgress,
+                fileTransfer = transfer,
                 logs = if (message.isNullOrBlank()) state.logs else state.logs + "Mesh: $message\n"
             )
         }
-        if (peers != null || fileProgress != null) refresh()
+        if (peers != null || fileProgress != null || transferUpdate != null) refresh()
     }
 
     fun appendLog(message: String) {
@@ -212,6 +266,19 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
             if (node.isNotEmpty()) ids.add(node.uppercase())
         }
         return ids
+    }
+
+    private fun resolveOrCreateNodeId(): String {
+        val stored = resolveInitialNodeId(prefs.getString("node_id", null))
+        if (stored != null) return stored
+        val androidId = Settings.Secure.getString(
+            getApplication<Application>().contentResolver,
+            Settings.Secure.ANDROID_ID
+        )
+        val seed = androidId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        val generated = generateDefaultNodeId(seed)
+        prefs.edit().putString("node_id", generated).apply()
+        return generated
     }
 
     private fun isOnline(id: String, onlineNodes: Set<String>): Boolean {

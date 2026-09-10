@@ -5,14 +5,18 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -51,26 +55,60 @@ class ComposeMeshActivity : ComponentActivity() {
             if (uri == null || destination.isNullOrBlank()) return@registerForActivityResult
             ioExecutor.execute {
                 try {
+                    val size = queryFileSize(uri)
+                    val name = queryDisplayName(uri)
+                    runOnUiThread {
+                        viewModel.setFileTransfer(
+                            FileTransferUi(
+                                phase = FileTransferPhase.SENDING,
+                                fileName = name,
+                                sizeLabel = formatByteSize(size),
+                                completed = 0,
+                                total = 0
+                            )
+                        )
+                    }
                     contentResolver.openInputStream(uri).use { input ->
                         if (input == null) throw IllegalStateException("Could not open file")
                         val output = ByteArrayOutputStream()
                         val buffer = ByteArray(8192)
                         var read: Int
                         while (input.read(buffer).also { read = it } != -1) output.write(buffer, 0, read)
-                        val name = queryDisplayName(uri)
                         startMeshService()
                         val sent = MeshService.sendFile(this, destination, name, output.toByteArray())
                         runOnUiThread {
-                            viewModel.onMeshStatus(
-                                null,
-                                null,
-                                if (sent) "Signed file transfer queued: $name"
-                                else "File transfer failed. Start mesh and check the event log."
-                            )
+                            if (sent) {
+                                viewModel.setFileTransfer(
+                                    FileTransferUi(
+                                        phase = FileTransferPhase.SENDING,
+                                        fileName = name,
+                                        sizeLabel = formatByteSize(size),
+                                        completed = 0,
+                                        total = 0
+                                    )
+                                )
+                                viewModel.onMeshStatus(null, null, "Signed file transfer queued: $name")
+                            } else {
+                                viewModel.setFileTransfer(
+                                    FileTransferUi(
+                                        phase = FileTransferPhase.FAILED,
+                                        fileName = name,
+                                        sizeLabel = formatByteSize(size),
+                                        error = "File transfer failed. Start mesh and check the event log."
+                                    )
+                                )
+                            }
                         }
                     }
                 } catch (error: Exception) {
-                    runOnUiThread { viewModel.onMeshStatus(null, null, "File error: ${error.message}") }
+                    runOnUiThread {
+                        viewModel.setFileTransfer(
+                            FileTransferUi(
+                                phase = FileTransferPhase.FAILED,
+                                error = "File error: ${error.message}"
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -80,7 +118,7 @@ class ComposeMeshActivity : ComponentActivity() {
             viewModel.appendLog("Bluetooth enable flow finished.")
             if (bluetoothAdapter?.isEnabled == true) {
                 preloadBondedDevices()
-                startMeshService()
+                maybeAutoStartMesh()
             }
         }
 
@@ -91,11 +129,13 @@ class ComposeMeshActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            val granted = result.values.all { it }
+            getSharedPreferences("mesh", MODE_PRIVATE).edit().putBoolean("permissions_asked", true).apply()
+            val granted = result.isNotEmpty() && result.values.all { it } && missingPermissions().isEmpty()
+            refreshPermissionState()
             viewModel.appendLog(if (granted) "Permissions granted." else "Some Bluetooth permissions were denied.")
             if (granted) {
                 preloadBondedDevices()
-                startMeshService()
+                maybeAutoStartMesh()
             }
         }
 
@@ -128,19 +168,29 @@ class ComposeMeshActivity : ComponentActivity() {
         override fun onReceive(context: Context, intent: Intent) {
             val peers = intent.getStringArrayListExtra("peers")
             val filePath = intent.getStringExtra("file_path")
+            val fileName = intent.getStringExtra("file_name")
+            val hasFileProgress = intent.hasExtra("file_total")
             val fileProgress = when {
                 filePath != null -> {
                     lastReceivedFilePath = filePath
-                    val fileName = intent.getStringExtra("file_name")
-                    Toast.makeText(context, "File received: $fileName", Toast.LENGTH_LONG).show()
                     "Verified file saved. Tap the message to open: $fileName"
                 }
-                intent.hasExtra("file_total") ->
-                    "File ${intent.getStringExtra("file_name")}: " +
+                hasFileProgress ->
+                    "File $fileName: " +
                         "${intent.getIntExtra("file_completed", 0)}/${intent.getIntExtra("file_total", 0)}"
                 else -> null
             }
-            viewModel.onMeshStatus(intent.getStringExtra("message"), peers, fileProgress)
+            val transferUpdate = when {
+                filePath != null || hasFileProgress -> fileTransferFromProgress(
+                    fileName = fileName,
+                    completed = intent.getIntExtra("file_completed", if (filePath != null) 1 else 0),
+                    total = intent.getIntExtra("file_total", if (filePath != null) 1 else 0),
+                    receivedPath = filePath,
+                    previous = viewModel.uiState.value.fileTransfer
+                )
+                else -> null
+            }
+            viewModel.onMeshStatus(intent.getStringExtra("message"), peers, fileProgress, transferUpdate)
             if (filePath != null) viewModel.refresh()
         }
     }
@@ -162,8 +212,9 @@ class ComposeMeshActivity : ComponentActivity() {
         receiversRegistered = true
 
         viewModel.appendLog("Mesh v${BuildConfig.VERSION_NAME} ready. Messages and files are ECDSA-signed.")
-        requestNeededPermissions()
+        refreshPermissionState()
         preloadBondedDevices()
+        maybeAutoStartMesh()
 
         setContent {
             MeshApp(
@@ -178,19 +229,31 @@ class ComposeMeshActivity : ComponentActivity() {
                         viewModel.appendLog("Connecting to ${peer.address} over BLE and RFCOMM...")
                     },
                     sendMessage = { destination, body ->
-                        startMeshService()
-                        val sent = MeshService.sendMessage(this, destination, body)
-                        Toast.makeText(
-                            this,
-                            if (sent) "Message sent into the mesh." else "Message was not sent. Check mesh setup.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        if (sent) viewModel.refresh()
-                        sent
+                        if (!viewModel.uiState.value.meshStarted) {
+                            Toast.makeText(this, "Start Mesh before sending.", Toast.LENGTH_SHORT).show()
+                            false
+                        } else {
+                            startMeshService()
+                            val sent = MeshService.sendMessage(this, destination, body)
+                            Toast.makeText(
+                                this,
+                                if (sent) "Message sent into the mesh." else "Message was not sent. Check mesh setup.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            if (sent) viewModel.refresh()
+                            sent
+                        }
                     },
                     pickFile = { destination ->
                         if (destination.isBlank()) {
                             Toast.makeText(this, "Enter the destination node ID before sending a file.", Toast.LENGTH_SHORT).show()
+                        } else if (!viewModel.uiState.value.meshStarted) {
+                            viewModel.setFileTransfer(
+                                FileTransferUi(
+                                    phase = FileTransferPhase.FAILED,
+                                    error = "Start Mesh before sending a file."
+                                )
+                            )
                         } else {
                             pendingFileDestination = destination
                             startMeshService()
@@ -201,13 +264,25 @@ class ComposeMeshActivity : ComponentActivity() {
                     checkUpdate = { startAppUpdate() },
                     openLegacyConsole = {
                         startActivity(Intent(this, MainActivity::class.java))
-                    }
+                    },
+                    copyNodeId = { copyNodeId() },
+                    shareNodeId = { shareNodeId() },
+                    requestPermissions = { requestNeededPermissions() },
+                    openAppSettings = { openAppSettings() },
+                    openLocationSettings = { openLocationSettings() }
                 )
             )
         }
     }
 
     private fun requestNeededPermissions() {
+        val permissions = missingPermissions()
+        getSharedPreferences("mesh", MODE_PRIVATE).edit().putBoolean("permissions_asked", true).apply()
+        if (permissions.isNotEmpty()) permissionLauncher.launch(permissions.toTypedArray())
+        else maybeAutoStartMesh()
+    }
+
+    private fun missingPermissions(): List<String> {
         val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             maybeAdd(permissions, Manifest.permission.BLUETOOTH_CONNECT)
@@ -222,8 +297,74 @@ class ComposeMeshActivity : ComponentActivity() {
             maybeAdd(permissions, Manifest.permission.ACCESS_FINE_LOCATION)
             maybeAdd(permissions, Manifest.permission.ACCESS_COARSE_LOCATION)
         }
-        if (permissions.isNotEmpty()) permissionLauncher.launch(permissions.toTypedArray())
-        else startMeshService()
+        return permissions
+    }
+
+    private fun refreshPermissionState() {
+        val missing = missingPermissions()
+        val asked = getSharedPreferences("mesh", MODE_PRIVATE).getBoolean("permissions_asked", false)
+        val permanentlyDenied = asked && missing.any { !shouldShowRequestPermissionRationale(it) }
+        val locationOff = isLocationServicesOff()
+        val bluetoothOff = bluetoothAdapter?.isEnabled != true
+        viewModel.setPermissionState(
+            PermissionUi(
+                allGranted = missing.isEmpty(),
+                missingCount = missing.size,
+                permanentlyDenied = permanentlyDenied,
+                locationServicesOff = locationOff,
+                bluetoothOff = bluetoothOff,
+                showRationale = missing.isNotEmpty() && !permanentlyDenied
+            )
+        )
+    }
+
+    private fun isLocationServicesOff(): Boolean {
+        val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            !locationManager.isLocationEnabled
+        } else {
+            !locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) &&
+                !locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+    }
+
+    private fun maybeAutoStartMesh() {
+        refreshPermissionState()
+        val permission = viewModel.uiState.value.permission
+        if (permission.readyForMesh) {
+            startListening()
+        }
+    }
+
+    private fun copyNodeId() {
+        val nodeId = viewModel.uiState.value.nodeId
+        if (nodeId.isBlank()) return
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Mesh node ID", nodeId))
+        viewModel.markNodeIdCopied()
+        viewModel.appendLog("Copied node ID $nodeId")
+    }
+
+    private fun shareNodeId() {
+        val nodeId = viewModel.uiState.value.nodeId
+        if (nodeId.isBlank()) return
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, "My mesh node ID is $nodeId. Nearby phones link automatically over BLE — no pairing.")
+        }
+        startActivity(Intent.createChooser(send, "Share node ID"))
+    }
+
+    private fun openAppSettings() {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+        )
+    }
+
+    private fun openLocationSettings() {
+        startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
     }
 
     private fun maybeAdd(permissions: MutableList<String>, permission: String) {
@@ -262,10 +403,21 @@ class ComposeMeshActivity : ComponentActivity() {
     }
 
     private fun startListening() {
+        refreshPermissionState()
+        val permission = viewModel.uiState.value.permission
+        if (!permission.allGranted) {
+            viewModel.appendLog("Grant Bluetooth permissions before starting the mesh.")
+            return
+        }
+        if (permission.bluetoothOff) {
+            viewModel.appendLog("Bluetooth is OFF. Enable it before starting the mesh.")
+            ensureBluetoothEnabled()
+            return
+        }
         startMeshService()
+        viewModel.markMeshStarted()
         viewModel.appendLog("Mesh started: BLE dual-role (no pairing) plus RFCOMM for classic/Windows peers.")
-        val locationManager = getSystemService(LOCATION_SERVICE) as? android.location.LocationManager
-        if (locationManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !locationManager.isLocationEnabled) {
+        if (permission.locationServicesOff) {
             viewModel.appendLog("Turn on Location in Android settings. Many phones will not BLE-scan while Location is off.")
         }
     }
@@ -304,6 +456,13 @@ class ComposeMeshActivity : ComponentActivity() {
             }
         }
         return fallback
+    }
+
+    private fun queryFileSize(uri: Uri): Long {
+        contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getLong(0)
+        }
+        return -1L
     }
 
     private fun openReceivedFile(path: String?) {
@@ -345,6 +504,10 @@ class ComposeMeshActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshPermissionState()
+        if (viewModel.uiState.value.permission.readyForMesh && !viewModel.uiState.value.meshStarted) {
+            maybeAutoStartMesh()
+        }
         AppUpdater.installPendingIfReady(this) { message ->
             runOnUiThread { viewModel.setUpdateStatus(message, busy = false) }
         }
