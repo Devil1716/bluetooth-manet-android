@@ -9,35 +9,47 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-val MeshBlack = Color(0xFF000000)
+val MeshNavy = Color(0xFF070A14)
+val MeshBlack = MeshNavy
 val MeshWhite = Color(0xFFFFFFFF)
-val MeshMuted = Color(0xFF8E8E93)
-val MeshMint = Color(0xFF9ECFC4)
-val MeshLavender = Color(0xFFC4B3DC)
-val MeshOnline = Color(0xFF30D158)
-val MeshSearchFill = Color(0x4DFFFFFF)
-val MeshAddCircle = Color(0x66FFFFFF)
-val MeshIncoming = Color(0xFF1C1C1E)
-val MeshOutgoing = Color(0xFF5E5A8A)
-val MeshComposer = Color(0xFF1C1C1E)
-val MeshSurface = Color(0xFF161618)
+val MeshMuted = Color(0xFF8B91A8)
+val MeshAccent = Color(0xFF8B8CFF)
+val MeshAccentDeep = Color(0xFF6B6EFF)
+val MeshMint = MeshAccent
+val MeshLavender = Color(0xFFC5C0F5)
+val MeshOnline = Color(0xFF4ADE80)
+val MeshAway = Color(0xFF8B8CFF)
+val MeshSearchFill = Color(0x1AFFFFFF)
+val MeshAddCircle = Color(0x22FFFFFF)
+val MeshIncoming = Color(0xFF1A2033)
+val MeshOutgoing = Color(0xFF6B74F0)
+val MeshComposer = Color(0xFF151B2C)
+val MeshCard = Color(0xFF101628)
+val MeshBar = Color(0xFF0C1020)
+val MeshSurface = Color(0xFF101628)
 val MeshDanger = Color(0xFFFF453A)
 val MeshChipIdle = Color(0x33FFFFFF)
-val MeshChipLive = Color(0x3320C997)
+val MeshChipLive = Color(0x338B8CFF)
 
-val HeaderGradient = Brush.linearGradient(
-    colors = listOf(Color(0xFFA8D4C8), Color(0xFFB7C4D6), Color(0xFFC5B4DC)),
-    start = Offset.Zero,
-    end = Offset(900f, 1100f)
+val AccentGradient = Brush.horizontalGradient(
+    colors = listOf(Color(0xFF8B8CFF), Color(0xFF6B74F0), Color(0xFFA78BFA))
 )
 
+val BubbleGradient = Brush.linearGradient(
+    colors = listOf(Color(0xFF7B82F5), Color(0xFF6B6EFF)),
+    start = Offset.Zero,
+    end = Offset(400f, 280f)
+)
+
+val HeaderGradient = AccentGradient
+
 private val MeshColorScheme = darkColorScheme(
-    primary = MeshMint,
+    primary = MeshAccent,
     secondary = MeshLavender,
-    background = MeshBlack,
-    surface = MeshBlack,
-    onPrimary = MeshBlack,
-    onSecondary = MeshBlack,
+    background = MeshNavy,
+    surface = MeshNavy,
+    onPrimary = MeshWhite,
+    onSecondary = MeshNavy,
     onBackground = MeshWhite,
     onSurface = MeshWhite
 )

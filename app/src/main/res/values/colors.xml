@@ -1,16 +1,16 @@
 <resources>
-    <color name="mesh_bg">#000000</color>
-    <color name="mesh_surface">#1C1C1E</color>
-    <color name="mesh_card">#161616</color>
-    <color name="mesh_teal">#9ECFC4</color>
-    <color name="mesh_teal_dim">#6FA89E</color>
-    <color name="mesh_lavender">#C4B3DC</color>
+    <color name="mesh_bg">#070A14</color>
+    <color name="mesh_surface">#151B2C</color>
+    <color name="mesh_card">#101628</color>
+    <color name="mesh_teal">#8B8CFF</color>
+    <color name="mesh_teal_dim">#6B6EFF</color>
+    <color name="mesh_lavender">#C5C0F5</color>
     <color name="mesh_text">#FFFFFF</color>
-    <color name="mesh_muted">#8E8E93</color>
-    <color name="mesh_bubble_out">#5E5A8A</color>
-    <color name="mesh_bubble_in">#1C1C1E</color>
-    <color name="online_green">#30D158</color>
-    <color name="blue_600">#5E5A8A</color>
-    <color name="blue_800">#3D3A5C</color>
-    <color name="green_600">#30D158</color>
+    <color name="mesh_muted">#8B91A8</color>
+    <color name="mesh_bubble_out">#6B74F0</color>
+    <color name="mesh_bubble_in">#1A2033</color>
+    <color name="online_green">#4ADE80</color>
+    <color name="blue_600">#8B8CFF</color>
+    <color name="blue_800">#6B6EFF</color>
+    <color name="green_600">#4ADE80</color>
 </resources>

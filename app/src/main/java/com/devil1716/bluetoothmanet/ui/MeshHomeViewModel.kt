@@ -32,8 +32,11 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     private val _uiState = MutableStateFlow(
         MeshUiState(
             nodeId = resolveOrCreateNodeId(),
-            showWelcome = !prefs.getBoolean("onboarding_welcome_seen", false),
-            onboardingComplete = prefs.getBoolean("onboarding_complete", false)
+            showWelcome = false,
+            onboardingComplete = prefs.getBoolean("onboarding_complete", false) ||
+                prefs.getBoolean("onboarded", false),
+            onboarded = prefs.getBoolean("onboarded", false) ||
+                prefs.getBoolean("onboarding_complete", false)
         )
     )
     val uiState: StateFlow<MeshUiState> = _uiState.asStateFlow()
@@ -118,6 +121,19 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     fun openSetup() = openSettings()
 
     fun closeSetup() = closeSettings()
+
+    fun completeOnboarding() {
+        prefs.edit()
+            .putBoolean("onboarded", true)
+            .putBoolean("onboarding_complete", true)
+            .putBoolean("onboarding_welcome_seen", true)
+            .apply()
+        _uiState.update {
+            it.copy(onboarded = true, onboardingComplete = true, showWelcome = false)
+        }
+    }
+
+    fun setHomeTab(tab: MeshHomeTab) = _uiState.update { it.copy(homeTab = tab) }
 
     fun openThread(conversationId: String) {
         val id = conversationId.trim().uppercase()
@@ -219,27 +235,41 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         val grouped = messages.groupBy { it.conversationId }
         val fromMessages = grouped.map { (id, items) ->
             val last = items.maxByOrNull { it.timestamp } ?: return@map null
+            val online = isOnline(id, onlineNodes)
+            val neighbor = neighborFor(id)
             ConversationPreview(
                 id = id,
                 name = displayNameFor(id),
                 preview = MeshFileStore.displayName(last.text),
                 timestamp = last.timestamp,
-                online = isOnline(id, onlineNodes),
-                hasAttachment = MeshFileStore.isFileMessage(last.text)
+                online = online,
+                hasAttachment = MeshFileStore.isFileMessage(last.text),
+                rssi = neighbor?.rssi ?: 0,
+                hopCount = neighbor?.hopCount ?: 1,
+                subtitle = nearbySubtitle(online, neighbor?.hopCount ?: 1),
+                distanceLabel = formatDistanceLabel(neighbor?.rssi ?: 0, neighbor?.hopCount ?: 1),
+                hasMessages = true
             )
         }.filterNotNull()
         val seen = fromMessages.map { it.id.uppercase() }.toHashSet()
         val fromNeighbors = neighbors.mapNotNull { neighbor ->
             val node = neighbor.displayName?.trim().orEmpty()
             if (node.isEmpty() || !seen.add(node.uppercase())) null
-            else ConversationPreview(
-                id = node,
-                name = displayNameFor(node),
-                preview = "No messages yet",
-                timestamp = if (neighbor.lastSeen > 0L) neighbor.lastSeen else 0L,
-                online = neighbor.connected || isOnline(node, onlineNodes),
-                hasAttachment = false
-            )
+            else {
+                val online = neighbor.connected || isOnline(node, onlineNodes)
+                ConversationPreview(
+                    id = node,
+                    name = displayNameFor(node),
+                    preview = "Tap to start a conversation",
+                    timestamp = if (neighbor.lastSeen > 0L) neighbor.lastSeen else 0L,
+                    online = online,
+                    hasAttachment = false,
+                    rssi = neighbor.rssi,
+                    hopCount = neighbor.hopCount,
+                    subtitle = nearbySubtitle(online, neighbor.hopCount),
+                    distanceLabel = formatDistanceLabel(neighbor.rssi, neighbor.hopCount)
+                )
+            }
         }
         val conversations = (fromMessages + fromNeighbors)
             .sortedWith(compareByDescending<ConversationPreview> { it.online }.thenByDescending { it.timestamp })
@@ -286,6 +316,12 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
             )
         }
         return stories.values.toList()
+    }
+
+    private fun neighborFor(id: String): MeshNeighborEntity? {
+        return neighbors.firstOrNull {
+            it.displayName.equals(id, true) || it.deviceId.equals(id, true)
+        }
     }
 
     private fun displayNameFor(id: String): String {

@@ -20,4 +20,17 @@ class MeshUiTimeTest {
         val yesterday = (nowCal.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
         assertEquals("Yesterday", formatInboxTime(yesterday.timeInMillis, nowCal.timeInMillis))
     }
+
+    @Test
+    fun rssiConvertsToNearbyMeters() {
+        val meters = rssiToDistanceMeters(-52)
+        assertEquals(true, meters != null && meters in 8..80)
+        assertEquals("~ ${meters} m away", formatDistanceLabel(-52, 1))
+    }
+
+    @Test
+    fun missingRssiFallsBackToNearby() {
+        assertEquals("Nearby", formatDistanceLabel(0, 1))
+        assertEquals("~ 80 m away", formatDistanceLabel(0, 2))
+    }
 }

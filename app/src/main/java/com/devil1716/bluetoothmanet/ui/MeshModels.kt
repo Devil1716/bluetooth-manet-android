@@ -8,6 +8,10 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.pow
+import kotlin.math.roundToInt
+
+enum class MeshHomeTab { Nearby, Chats, Profile }
 
 data class ConversationPreview(
     val id: String,
@@ -15,7 +19,12 @@ data class ConversationPreview(
     val preview: String,
     val timestamp: Long,
     val online: Boolean,
-    val hasAttachment: Boolean
+    val hasAttachment: Boolean,
+    val rssi: Int = 0,
+    val hopCount: Int = 1,
+    val subtitle: String = "",
+    val distanceLabel: String = "Nearby",
+    val hasMessages: Boolean = false
 )
 
 data class StoryPeer(
@@ -68,6 +77,8 @@ data class MeshUiState(
     val newChatVisible: Boolean = false,
     val showWelcome: Boolean = false,
     val onboardingComplete: Boolean = false,
+    val onboarded: Boolean = false,
+    val homeTab: MeshHomeTab = MeshHomeTab.Nearby,
     val meshStarted: Boolean = false,
     val meshStatus: String = "Offline",
     val statusChip: String = "Offline",
@@ -108,7 +119,7 @@ fun formatInboxTime(timestamp: Long, now: Long = System.currentTimeMillis()): St
     if (nowCal.get(Calendar.YEAR) == thenCal.get(Calendar.YEAR)
         && nowCal.get(Calendar.DAY_OF_YEAR) == thenCal.get(Calendar.DAY_OF_YEAR)
     ) {
-        return SimpleDateFormat("h:mm a", Locale.US).format(Date(timestamp)).lowercase(Locale.US)
+        return formatChatTime(timestamp)
     }
     val yesterday = Calendar.getInstance().apply {
         timeInMillis = now
@@ -122,6 +133,32 @@ fun formatInboxTime(timestamp: Long, now: Long = System.currentTimeMillis()): St
     return SimpleDateFormat("MMM. d", Locale.US).format(Date(timestamp))
 }
 
+fun formatChatTime(timestamp: Long): String {
+    if (timestamp <= 0L) return ""
+    return SimpleDateFormat("h:mm a", Locale.US).format(Date(timestamp))
+}
+
+fun rssiToDistanceMeters(rssi: Int): Int? {
+    if (rssi == 0) return null
+    val meters = 10.0.pow((-59.0 - rssi) / 22.0)
+    return meters.roundToInt().coerceIn(8, 220)
+}
+
+fun formatDistanceLabel(rssi: Int, hopCount: Int): String {
+    val meters = rssiToDistanceMeters(rssi)
+    if (meters != null) return "~ $meters m away"
+    if (hopCount > 1) return "~ ${hopCount * 40} m away"
+    return "Nearby"
+}
+
+fun nearbySubtitle(connected: Boolean, hopCount: Int): String {
+    return when {
+        connected -> "Connected nearby"
+        hopCount > 1 -> "Reachable through the mesh"
+        else -> "On the local mesh"
+    }
+}
+
 fun avatarInitials(name: String): String {
     val parts = name.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
     return when {
@@ -133,14 +170,14 @@ fun avatarInitials(name: String): String {
 
 fun avatarColor(key: String): Color {
     val palette = listOf(
-        Color(0xFF6C5CE7),
-        Color(0xFF00CEC9),
-        Color(0xFFFD79A8),
-        Color(0xFFFDCB6E),
-        Color(0xFF74B9FF),
-        Color(0xFF55EFC4),
-        Color(0xFFA29BFE),
-        Color(0xFFE17055)
+        Color(0xFF6B6EFF),
+        Color(0xFF8B8CFF),
+        Color(0xFF7C6CF0),
+        Color(0xFF5B8DEF),
+        Color(0xFFA78BFA),
+        Color(0xFF6366F1),
+        Color(0xFF818CF8),
+        Color(0xFF60A5FA)
     )
     val index = (key.uppercase(Locale.US).hashCode() and 0x7FFFFFFF) % palette.size
     return palette[index]
