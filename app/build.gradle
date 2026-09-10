@@ -14,14 +14,27 @@ android {
         applicationId "com.devil1716.bluetoothmanet"
         minSdk 21
         targetSdk 34
-        versionCode 22
-        versionName "1.3.4"
+        versionCode 25
+        versionName "1.3.7"
 
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner "androidx.test.junit.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        mesh {
+            storeFile file("keystore/mesh-update.jks")
+            storePassword "bluetoothmanet"
+            keyAlias "mesh"
+            keyPassword "bluetoothmanet"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.mesh
+        }
         release {
+            signingConfig signingConfigs.mesh
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }

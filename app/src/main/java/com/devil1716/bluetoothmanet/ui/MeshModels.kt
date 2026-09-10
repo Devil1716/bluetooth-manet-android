@@ -3,6 +3,7 @@ package com.devil1716.bluetoothmanet.ui
 import androidx.compose.ui.graphics.Color
 import com.devil1716.bluetoothmanet.ChatMessageEntity
 import com.devil1716.bluetoothmanet.PeerDevice
+import com.devil1716.bluetoothmanet.update.UpdateUi
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -23,24 +24,67 @@ data class StoryPeer(
     val online: Boolean
 )
 
+enum class FileTransferPhase {
+    NONE,
+    SENDING,
+    SUCCESS,
+    FAILED
+}
+
+data class FileTransferUi(
+    val phase: FileTransferPhase = FileTransferPhase.NONE,
+    val fileName: String = "",
+    val sizeLabel: String = "",
+    val completed: Int = 0,
+    val total: Int = 0,
+    val error: String = ""
+) {
+    val progress: Float
+        get() = if (total > 0) (completed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+
+    val visible: Boolean
+        get() = phase != FileTransferPhase.NONE
+}
+
+data class PermissionUi(
+    val allGranted: Boolean = false,
+    val missingCount: Int = 0,
+    val permanentlyDenied: Boolean = false,
+    val locationServicesOff: Boolean = false,
+    val bluetoothOff: Boolean = false,
+    val showRationale: Boolean = true
+) {
+    val readyForMesh: Boolean get() = allGranted && !bluetoothOff
+}
+
 data class MeshUiState(
-    val nodeId: String = "A",
+    val nodeId: String = "",
     val searchQuery: String = "",
     val conversations: List<ConversationPreview> = emptyList(),
     val stories: List<StoryPeer> = emptyList(),
     val threadMessages: List<ChatMessageEntity> = emptyList(),
     val openConversationId: String? = null,
-    val sheetVisible: Boolean = false,
-    val meshStatus: String = "Mesh idle",
-    val connectionsLabel: String = "No mesh links yet. Tap Start Mesh on both phones.",
+    val settingsVisible: Boolean = false,
+    val newChatVisible: Boolean = false,
+    val showWelcome: Boolean = false,
+    val onboardingComplete: Boolean = false,
+    val meshStarted: Boolean = false,
+    val meshStatus: String = "Offline",
+    val statusChip: String = "Offline",
+    val livePeerIds: List<String> = emptyList(),
+    val connectionsLabel: String = "Nearby chat is off",
     val fileProgress: String = "No file transfer",
-    val logs: String = "Logs will appear here...\n",
+    val fileTransfer: FileTransferUi = FileTransferUi(),
+    val logs: String = "",
     val classicPeers: List<PeerDevice> = emptyList(),
     val composerText: String = "",
     val newChatNodeId: String = "",
-    val updateStatus: String = "",
-    val updateBusy: Boolean = false
+    val update: UpdateUi = UpdateUi(),
+    val permission: PermissionUi = PermissionUi(),
+    val nodeIdCopied: Boolean = false
 ) {
+    val updateStatus: String get() = update.message
+    val updateBusy: Boolean get() = update.busy
     val openConversation: ConversationPreview?
         get() = openConversationId?.let { id -> conversations.firstOrNull { it.id.equals(id, true) } }
             ?: openConversationId?.let { ConversationPreview(it, it, "", 0L, false, false) }

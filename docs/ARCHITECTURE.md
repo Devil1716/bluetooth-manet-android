@@ -7,7 +7,7 @@ BitChat ([permissionlesstech/bitchat](https://github.com/permissionlesstech/bitc
 ## Layers
 
 ```text
-Compose / XML UI  (MainActivity is the live messenger)
+Compose UI  (ComposeMeshActivity is the live messenger; MainActivity is the legacy XML console)
         ↓
 MeshService foreground process
         ↓
