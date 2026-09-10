@@ -31,6 +31,8 @@ import com.devil1716.bluetoothmanet.MainActivity
 import com.devil1716.bluetoothmanet.MeshService
 import com.devil1716.bluetoothmanet.PeerDevice
 import com.devil1716.bluetoothmanet.update.AppUpdater
+import com.devil1716.bluetoothmanet.update.UpdateListener
+import com.devil1716.bluetoothmanet.update.UpdatePhase
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.LinkedHashMap
@@ -40,6 +42,9 @@ import java.util.concurrent.Executors
 class ComposeMeshActivity : ComponentActivity() {
     private val viewModel: MeshHomeViewModel by lazy {
         ViewModelProvider(this)[MeshHomeViewModel::class.java]
+    }
+    private val updateListener = UpdateListener { state ->
+        runOnUiThread { viewModel.setUpdate(state) }
     }
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private val discoveredPeers = LinkedHashMap<String, PeerDevice>()
@@ -139,6 +144,20 @@ class ComposeMeshActivity : ComponentActivity() {
             }
         }
 
+    private val unknownSourcesLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                AppUpdater.continueInstall(this, updateListener)
+            } else {
+                viewModel.setUpdate(
+                    viewModel.uiState.value.update.copy(
+                        phase = UpdatePhase.NEEDS_PERMISSION,
+                        message = "Install permission is still off. Allow Mesh to install updates."
+                    )
+                )
+            }
+        }
+
     private val discoveryReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context, intent: Intent) {
@@ -195,6 +214,13 @@ class ComposeMeshActivity : ComponentActivity() {
         }
     }
 
+    private val installResultReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != AppUpdater.ACTION_INSTALL_RESULT) return
+            AppUpdater.handleInstallResult(this@ComposeMeshActivity, intent, updateListener)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -209,12 +235,19 @@ class ComposeMeshActivity : ComponentActivity() {
         ContextCompat.registerReceiver(this, discoveryReceiver, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED), ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(this, meshEventReceiver, IntentFilter(MeshService.ACTION_MESSAGE_EVENT), ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(this, meshStatusReceiver, IntentFilter(MeshService.ACTION_MESH_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(
+            this,
+            installResultReceiver,
+            IntentFilter(AppUpdater.ACTION_INSTALL_RESULT),
+            ContextCompat.RECEIVER_EXPORTED
+        )
         receiversRegistered = true
 
         viewModel.appendLog("Mesh v${BuildConfig.VERSION_NAME} ready. Messages and files are ECDSA-signed.")
         refreshPermissionState()
         preloadBondedDevices()
         maybeAutoStartMesh()
+        window.decorView.post { AppUpdater.checkQuietly(this, BuildConfig.VERSION_NAME, updateListener) }
 
         setContent {
             MeshApp(
@@ -261,7 +294,11 @@ class ComposeMeshActivity : ComponentActivity() {
                         }
                     },
                     openFile = { path -> openReceivedFile(path) },
-                    checkUpdate = { startAppUpdate() },
+                    checkUpdate = { applyMeshUpdate() },
+                    applyUpdate = { applyMeshUpdate() },
+                    dismissUpdate = { viewModel.dismissUpdate() },
+                    uninstallForUpdate = { uninstallForUpdate() },
+                    openUpdatePage = { openUpdatePage() },
                     openLegacyConsole = {
                         startActivity(Intent(this, MainActivity::class.java))
                     },
@@ -485,21 +522,31 @@ class ComposeMeshActivity : ComponentActivity() {
     }
 
     private fun startAppUpdate() {
-        viewModel.setUpdateStatus("Checking GitHub for the latest APK...", busy = true)
-        AppUpdater.checkAndInstall(this, BuildConfig.VERSION_NAME) { message ->
-            runOnUiThread {
-                val done = message.startsWith("Update failed")
-                    || message.startsWith("Already on")
-                    || message.startsWith("Download complete")
-                    || message.startsWith("Opening installer")
-                    || message.startsWith("Allow Mesh")
-                    || message.startsWith("Update already")
-                viewModel.setUpdateStatus(message, busy = !done)
-                if (!message.startsWith("Downloading update")) {
-                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-                }
-            }
+        applyMeshUpdate()
+    }
+
+    private fun applyMeshUpdate() {
+        when (viewModel.uiState.value.update.phase) {
+            UpdatePhase.NEEDS_PERMISSION ->
+                unknownSourcesLauncher.launch(AppUpdater.unknownSourcesIntent(this))
+            UpdatePhase.SIGNATURE_CONFLICT -> uninstallForUpdate()
+            else -> AppUpdater.startFromBanner(this, BuildConfig.VERSION_NAME, updateListener)
         }
+    }
+
+    private fun uninstallForUpdate() {
+        copyNodeId()
+        Toast.makeText(
+            this,
+            "Node ID copied. Uninstall Mesh, then install the new APK.",
+            Toast.LENGTH_LONG
+        ).show()
+        startActivity(AppUpdater.uninstallIntent(this))
+        openUpdatePage()
+    }
+
+    private fun openUpdatePage() {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdater.latestApkPage())))
     }
 
     override fun onResume() {
@@ -508,9 +555,7 @@ class ComposeMeshActivity : ComponentActivity() {
         if (viewModel.uiState.value.permission.readyForMesh && !viewModel.uiState.value.meshStarted) {
             maybeAutoStartMesh()
         }
-        AppUpdater.installPendingIfReady(this) { message ->
-            runOnUiThread { viewModel.setUpdateStatus(message, busy = false) }
-        }
+        AppUpdater.installPendingIfReady(this, updateListener)
     }
 
     override fun onDestroy() {
@@ -518,6 +563,7 @@ class ComposeMeshActivity : ComponentActivity() {
             unregisterReceiver(discoveryReceiver)
             unregisterReceiver(meshEventReceiver)
             unregisterReceiver(meshStatusReceiver)
+            unregisterReceiver(installResultReceiver)
         }
         ioExecutor.shutdown()
         super.onDestroy()

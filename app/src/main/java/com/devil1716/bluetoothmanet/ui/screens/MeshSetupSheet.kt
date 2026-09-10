@@ -18,6 +18,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -54,6 +55,8 @@ fun MeshSetupSheet(
     classicPeers: List<PeerDevice>,
     updateStatus: String,
     updateBusy: Boolean,
+    updateLabel: String = if (updateBusy) "Updating…" else "Check update",
+    updateProgress: Float = 0f,
     onNodeIdChange: (String) -> Unit,
     onNewChatChange: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -185,7 +188,15 @@ fun MeshSetupSheet(
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A), contentColor = MeshWhite)
             ) {
-                Text(if (updateBusy) "Updating…" else "Check update")
+                Text(updateLabel)
+            }
+            if (updateBusy && updateProgress > 0f) {
+                LinearProgressIndicator(
+                    progress = { updateProgress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MeshMint,
+                    trackColor = Color(0xFF2A2A2A)
+                )
             }
             if (updateStatus.isNotBlank()) {
                 Text(updateStatus, color = MeshMint, fontSize = 13.sp)

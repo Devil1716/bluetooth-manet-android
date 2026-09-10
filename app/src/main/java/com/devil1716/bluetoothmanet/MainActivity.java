@@ -385,8 +385,8 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        AppUpdater.installPendingIfReady(this, message ->
-                runOnUiThread(() -> appendLog(message)));
+        AppUpdater.installPendingIfReady(this, state ->
+                runOnUiThread(() -> appendLog(state.getMessage())));
     }
 
     @SuppressLint("MissingPermission")

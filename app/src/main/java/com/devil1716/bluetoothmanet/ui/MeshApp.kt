@@ -10,6 +10,7 @@ import com.devil1716.bluetoothmanet.ui.screens.ChatThreadScreen
 import com.devil1716.bluetoothmanet.ui.screens.ChatsHomeScreen
 import com.devil1716.bluetoothmanet.ui.screens.MeshSetupSheet
 import com.devil1716.bluetoothmanet.ui.theme.MeshTheme
+import com.devil1716.bluetoothmanet.update.UpdatePhase
 
 data class MeshActions(
     val startMesh: () -> Unit = {},
@@ -21,6 +22,10 @@ data class MeshActions(
     val pickFile: (String) -> Unit = {},
     val openFile: (String) -> Unit = {},
     val checkUpdate: () -> Unit = {},
+    val applyUpdate: () -> Unit = {},
+    val dismissUpdate: () -> Unit = {},
+    val uninstallForUpdate: () -> Unit = {},
+    val openUpdatePage: () -> Unit = {},
     val openLegacyConsole: () -> Unit = {},
     val copyNodeId: () -> Unit = {},
     val shareNodeId: () -> Unit = {},
@@ -66,6 +71,7 @@ fun MeshApp(
                 meshStarted = state.meshStarted,
                 permission = state.permission,
                 nodeIdCopied = state.nodeIdCopied,
+                update = state.update,
                 showChecklist = shouldShowFirstRunChecklist(
                     conversationCount = state.conversations.size,
                     meshStarted = state.meshStarted,
@@ -81,6 +87,14 @@ fun MeshApp(
                 onOpenAppSettings = actions.openAppSettings,
                 onOpenLocationSettings = actions.openLocationSettings,
                 onEnableBluetooth = actions.enableBluetooth,
+                onUpdateAction = {
+                    if (state.update.phase == UpdatePhase.SIGNATURE_CONFLICT) {
+                        actions.uninstallForUpdate()
+                    } else {
+                        actions.applyUpdate()
+                    }
+                },
+                onDismissUpdate = actions.dismissUpdate,
                 onNearbyClick = { viewModel.openThread(it.id) },
                 onConversationClick = { viewModel.openThread(it.id) }
             )
@@ -93,8 +107,10 @@ fun MeshApp(
                 connectionsLabel = state.connectionsLabel,
                 logs = state.logs,
                 classicPeers = state.classicPeers,
-                updateStatus = state.updateStatus,
-                updateBusy = state.updateBusy,
+                updateStatus = state.update.message,
+                updateBusy = state.update.busy,
+                updateLabel = state.update.primaryLabel,
+                updateProgress = state.update.progress,
                 onNodeIdChange = viewModel::setNodeId,
                 onNewChatChange = viewModel::setNewChatNodeId,
                 onDismiss = viewModel::closeSetup,

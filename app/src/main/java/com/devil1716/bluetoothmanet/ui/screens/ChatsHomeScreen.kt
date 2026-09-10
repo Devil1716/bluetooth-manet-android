@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -33,6 +34,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -52,6 +54,8 @@ import androidx.compose.ui.unit.sp
 import com.devil1716.bluetoothmanet.ui.ConversationPreview
 import com.devil1716.bluetoothmanet.ui.PermissionUi
 import com.devil1716.bluetoothmanet.ui.StoryPeer
+import com.devil1716.bluetoothmanet.update.UpdatePhase
+import com.devil1716.bluetoothmanet.update.UpdateUi
 import com.devil1716.bluetoothmanet.ui.components.MeshAvatar
 import com.devil1716.bluetoothmanet.ui.formatInboxTime
 import com.devil1716.bluetoothmanet.ui.theme.HeaderGradient
@@ -78,6 +82,7 @@ fun ChatsHomeScreen(
     permission: PermissionUi,
     nodeIdCopied: Boolean,
     showChecklist: Boolean,
+    update: UpdateUi = UpdateUi(),
     onSearchChange: (String) -> Unit,
     onOpenSetup: () -> Unit,
     onCopyNodeId: () -> Unit,
@@ -87,6 +92,8 @@ fun ChatsHomeScreen(
     onOpenAppSettings: () -> Unit,
     onOpenLocationSettings: () -> Unit,
     onEnableBluetooth: () -> Unit,
+    onUpdateAction: () -> Unit = {},
+    onDismissUpdate: () -> Unit = {},
     onNearbyClick: (StoryPeer) -> Unit,
     onConversationClick: (ConversationPreview) -> Unit
 ) {
@@ -114,6 +121,15 @@ fun ChatsHomeScreen(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp)
         ) {
+            if (update.bannerVisible) {
+                item {
+                    UpdateBanner(
+                        update = update,
+                        onAction = onUpdateAction,
+                        onDismiss = onDismissUpdate
+                    )
+                }
+            }
             if (permission.showRationale || !permission.allGranted || permission.permanentlyDenied) {
                 item {
                     PermissionBanner(
@@ -380,6 +396,90 @@ private fun StatusChip(label: String, live: Boolean) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.widthIn(max = 160.dp)
         )
+    }
+}
+
+@Composable
+private fun UpdateBanner(
+    update: UpdateUi,
+    onAction: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val accent = when (update.phase) {
+        UpdatePhase.FAILED, UpdatePhase.SIGNATURE_CONFLICT -> MeshDanger
+        UpdatePhase.DOWNLOADING, UpdatePhase.INSTALLING -> MeshMint
+        else -> MeshMint
+    }
+    SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = when (update.phase) {
+                        UpdatePhase.AVAILABLE -> "Mesh ${update.availableVersion} is available"
+                        UpdatePhase.DOWNLOADING -> "Downloading Mesh ${update.availableVersion}"
+                        UpdatePhase.READY -> "Mesh ${update.availableVersion} is ready"
+                        UpdatePhase.INSTALLING -> "Installing Mesh ${update.availableVersion}"
+                        UpdatePhase.NEEDS_PERMISSION -> "Allow Mesh to install updates"
+                        UpdatePhase.SIGNATURE_CONFLICT -> "This install can't be replaced"
+                        UpdatePhase.FAILED -> "Update didn't finish"
+                        else -> "Mesh update"
+                    },
+                    color = MeshWhite,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp
+                )
+                Text(
+                    text = update.message.ifBlank {
+                        "Tap to update without leaving your chats."
+                    },
+                    color = MeshMuted,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            if (update.phase != UpdatePhase.DOWNLOADING && update.phase != UpdatePhase.INSTALLING) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(32.dp)
+                        .semantics { contentDescription = "Dismiss update" }
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = null, tint = MeshMuted)
+                }
+            }
+        }
+        if (update.phase == UpdatePhase.DOWNLOADING || update.phase == UpdatePhase.INSTALLING) {
+            if (update.progress > 0f) {
+                LinearProgressIndicator(
+                    progress = { update.progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = accent,
+                    trackColor = Color(0xFF2A2A2A)
+                )
+            } else {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = accent,
+                    trackColor = Color(0xFF2A2A2A)
+                )
+            }
+        }
+        Button(
+            onClick = onAction,
+            enabled = update.phase != UpdatePhase.DOWNLOADING && update.phase != UpdatePhase.INSTALLING,
+            modifier = Modifier
+                .padding(top = 12.dp)
+                .fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = MeshBlack)
+        ) {
+            Text(update.primaryLabel)
+        }
     }
 }
 

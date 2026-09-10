@@ -9,6 +9,8 @@ import com.devil1716.bluetoothmanet.ChatMessageEntity
 import com.devil1716.bluetoothmanet.MeshFileStore
 import com.devil1716.bluetoothmanet.MeshNeighborEntity
 import com.devil1716.bluetoothmanet.PeerDevice
+import com.devil1716.bluetoothmanet.update.UpdatePhase
+import com.devil1716.bluetoothmanet.update.UpdateUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -117,13 +119,34 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     fun setClassicPeers(peers: List<PeerDevice>) = _uiState.update { it.copy(classicPeers = peers) }
 
     fun setUpdateStatus(status: String, busy: Boolean? = null) {
-        _uiState.update {
-            it.copy(
-                updateStatus = status,
-                updateBusy = busy ?: it.updateBusy
+        _uiState.update { state ->
+            val phase = when {
+                busy == true -> UpdatePhase.CHECKING
+                status.startsWith("Update failed") -> UpdatePhase.FAILED
+                status.contains("different signing", ignoreCase = true) ->
+                    UpdatePhase.SIGNATURE_CONFLICT
+                else -> state.update.phase
+            }
+            state.copy(
+                update = state.update.copy(
+                    phase = phase,
+                    message = status,
+                )
             )
         }
         if (status.isNotBlank()) appendLog(status)
+    }
+
+    fun setUpdate(update: UpdateUi) {
+        val previous = _uiState.value.update
+        _uiState.update { it.copy(update = update) }
+        if (update.message.isNotBlank() && update.phase != previous.phase) {
+            appendLog(update.message)
+        }
+    }
+
+    fun dismissUpdate() {
+        _uiState.update { it.copy(update = it.update.copy(dismissed = true)) }
     }
 
     fun onMeshStatus(message: String?, peers: List<String>?, fileProgress: String?) {

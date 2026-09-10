@@ -17,7 +17,7 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 - Launcher: `ComposeMeshActivity` (legacy XML console is `MainActivity`)
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.3.5`
+- Current release: `v1.3.6`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
@@ -44,6 +44,12 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 - Phones usually need to be paired first only for classic RFCOMM / Windows.
 - This is a demo mesh, not BitChat wire-compatible and not a production protocol.
 - Received files land in the app-specific Downloads directory, not the system Downloads list.
+
+## Updating Mesh
+
+From 1.3.6 on, GitHub APKs are signed with a stable key and the app updates in place (WhatsApp-style banner: download, then Install).
+
+If you still have 1.3.5 or an Android Studio debug build, Android will refuse the new APK as a **package conflict**. Copy your node ID, uninstall Mesh, then install [v1.3.6](https://github.com/Devil1716/bluetooth-manet-android/releases/latest). After that, in-app updates replace the existing app.
 
 ## Windows laptop node
 

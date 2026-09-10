@@ -3,6 +3,7 @@ package com.devil1716.bluetoothmanet.ui
 import androidx.compose.ui.graphics.Color
 import com.devil1716.bluetoothmanet.ChatMessageEntity
 import com.devil1716.bluetoothmanet.PeerDevice
+import com.devil1716.bluetoothmanet.update.UpdateUi
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -75,11 +76,12 @@ data class MeshUiState(
     val classicPeers: List<PeerDevice> = emptyList(),
     val composerText: String = "",
     val newChatNodeId: String = "",
-    val updateStatus: String = "",
-    val updateBusy: Boolean = false,
+    val update: UpdateUi = UpdateUi(),
     val permission: PermissionUi = PermissionUi(),
     val nodeIdCopied: Boolean = false
 ) {
+    val updateStatus: String get() = update.message
+    val updateBusy: Boolean get() = update.busy
     val openConversation: ConversationPreview?
         get() = openConversationId?.let { id -> conversations.firstOrNull { it.id.equals(id, true) } }
             ?: openConversationId?.let { ConversationPreview(it, it, "", 0L, false, false) }
