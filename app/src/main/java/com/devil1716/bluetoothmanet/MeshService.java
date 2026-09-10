@@ -14,6 +14,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.os.IBinder;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -39,14 +40,17 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private BleGattTransport bleTransport;
     private AppDatabase database;
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService fileExecutor = Executors.newSingleThreadExecutor();
     private boolean receiverRegistered;
     private boolean foregroundReady;
     private String nodeId = "NODE";
     private final Set<String> rfcommTargets = ConcurrentHashMap.newKeySet();
+    private final Object pendingFileLock = new Object();
     private String pendingSendDestination;
     private String pendingSendName;
     private java.io.File pendingSendCache;
     private int pendingSendAttempts;
+    private long lastFileProgressBroadcastMs;
     private final Runnable pendingSendRetry = new Runnable() {
         @Override public void run() { processPendingFileSend(false); }
     };
@@ -148,8 +152,15 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (current != null) return current.sendNewMessage(destination, body);
         Intent intent = new Intent(context, MeshService.class)
                 .putExtra("send_destination", destination).putExtra("send_body", body);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
-        else context.startService(intent);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                context.startForegroundService(intent);
+            } catch (RuntimeException ignored) {
+                return false;
+            }
+        } else {
+            context.startService(intent);
+        }
         return true;
     }
 
@@ -169,34 +180,53 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (current != null && current.sendFile(destination, fileName, contents)) {
             return true;
         }
-        java.io.File cache = new java.io.File(context.getCacheDir(), "pending-mesh-send.bin");
-        try (java.io.FileOutputStream output = new java.io.FileOutputStream(cache)) {
-            output.write(contents);
-        } catch (java.io.IOException e) {
+        try {
+            java.io.File cache = new java.io.File(context.getCacheDir(), "pending-mesh-send.bin");
+            try (java.io.FileOutputStream output = new java.io.FileOutputStream(cache)) {
+                output.write(contents);
+            }
+            Intent intent = new Intent(context, MeshService.class)
+                    .putExtra("send_file_cache", cache.getAbsolutePath())
+                    .putExtra("send_file_dest", destination)
+                    .putExtra("send_file_name", fileName);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent);
+            } else {
+                context.startService(intent);
+            }
+            return true;
+        } catch (java.io.IOException | RuntimeException e) {
             return false;
         }
-        Intent intent = new Intent(context, MeshService.class)
-                .putExtra("send_file_cache", cache.getAbsolutePath())
-                .putExtra("send_file_dest", destination)
-                .putExtra("send_file_name", fileName);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
-        else context.startService(intent);
-        return true;
     }
 
     private void queuePendingFileSend(String destination, String fileName, java.io.File cache) {
-        pendingSendDestination = destination;
-        pendingSendName = fileName;
-        pendingSendCache = cache;
-        pendingSendAttempts = 0;
+        synchronized (pendingFileLock) {
+            pendingSendDestination = destination;
+            pendingSendName = fileName;
+            pendingSendCache = cache;
+            pendingSendAttempts = 0;
+        }
         handler.removeCallbacks(pendingSendRetry);
     }
 
     private void processPendingFileSend(boolean fromPeerEvent) {
-        if (manager == null || pendingSendCache == null || !pendingSendCache.exists()) return;
+        fileExecutor.execute(() -> processPendingFileSendOnWorker(fromPeerEvent));
+    }
+
+    private void processPendingFileSendOnWorker(boolean fromPeerEvent) {
+        String destination;
+        String fileName;
+        java.io.File cache;
+        synchronized (pendingFileLock) {
+            destination = pendingSendDestination;
+            fileName = pendingSendName;
+            cache = pendingSendCache;
+        }
+        if (manager == null || cache == null || !cache.exists()) return;
         try {
-            byte[] bytes = java.nio.file.Files.readAllBytes(pendingSendCache.toPath());
-            if (manager.sendFile(pendingSendDestination, pendingSendName, bytes)) {
+            byte[] bytes = MeshFileStore.readLimited(cache, MeshFileStore.MAX_SEND_BYTES);
+            if (manager.sendFile(destination, fileName, bytes)) {
                 clearPendingFileSend(true);
                 return;
             }
@@ -204,15 +234,23 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             status("Could not read queued file: " + e.getMessage());
             clearPendingFileSend(false);
             return;
+        } catch (RuntimeException | OutOfMemoryError e) {
+            status("File send failed: " + e.getMessage());
+            clearPendingFileSend(false);
+            return;
         }
-        pendingSendAttempts++;
-        if (pendingSendAttempts >= 20) {
-            status("File send failed. Start mesh, wait for a signed link, then try again.");
+        int attempts;
+        synchronized (pendingFileLock) {
+            pendingSendAttempts++;
+            attempts = pendingSendAttempts;
+        }
+        if (attempts >= 20) {
+            status("File send failed. Stay in the app, wait until someone is nearby, then try again.");
             clearPendingFileSend(false);
             return;
         }
         if (!fromPeerEvent) {
-            status("Waiting for mesh link to send " + pendingSendName + "...");
+            status("Waiting to send " + fileName + "…");
         }
         handler.removeCallbacks(pendingSendRetry);
         handler.postDelayed(pendingSendRetry, 2000L);
@@ -220,15 +258,19 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     private void clearPendingFileSend(boolean sent) {
         handler.removeCallbacks(pendingSendRetry);
-        if (pendingSendCache != null) {
-            pendingSendCache.delete();
+        java.io.File cache;
+        synchronized (pendingFileLock) {
+            cache = pendingSendCache;
+            pendingSendCache = null;
+            pendingSendDestination = null;
+            pendingSendName = null;
+            pendingSendAttempts = 0;
         }
-        pendingSendCache = null;
-        pendingSendDestination = null;
-        pendingSendName = null;
-        pendingSendAttempts = 0;
+        if (cache != null) {
+            cache.delete();
+        }
         if (sent) {
-            status("Signed file transfer started.");
+            status("File transfer started.");
         }
     }
 
@@ -261,6 +303,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     @Override public void onDestroy() {
         activeManager = null;
         handler.removeCallbacksAndMessages(null);
+        fileExecutor.shutdownNow();
         if (receiverRegistered) unregisterReceiver(bondReceiver);
         if (bleTransport != null) bleTransport.stop();
         if (manager != null) manager.stop();
@@ -312,6 +355,10 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     }
 
     @Override public void onFileProgress(String transferId, int completed, int total, String fileName) {
+        boolean complete = total > 0 && completed >= total;
+        long now = SystemClock.elapsedRealtime();
+        if (!complete && now - lastFileProgressBroadcastMs < 200L) return;
+        lastFileProgressBroadcastMs = now;
         sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName())
                 .putExtra("file_id", transferId).putExtra("file_completed", completed)
                 .putExtra("file_total", total).putExtra("file_name", fileName));

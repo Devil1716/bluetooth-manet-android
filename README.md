@@ -18,7 +18,7 @@ Android phones talk over a BitChat-style BLE mesh. A Windows laptop can still jo
 - Launcher: `ComposeMeshActivity` (legacy XML console is `MainActivity`, hidden behind a long-press on the version in Settings → About)
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.3.7`
+- Current release: `v1.3.8`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run

@@ -115,6 +115,18 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun setNewChatNodeId(nodeId: String) = _uiState.update { it.copy(newChatNodeId = nodeId) }
 
+    fun setPendingFileDestination(destination: String) {
+        val id = destination.trim().uppercase()
+        if (id.isEmpty()) return
+        prefs.edit().putString("pending_file_dest", id).apply()
+    }
+
+    fun consumePendingFileDestination(): String? {
+        val id = prefs.getString("pending_file_dest", null)?.trim().orEmpty()
+        prefs.edit().remove("pending_file_dest").apply()
+        return id.takeIf { it.isNotEmpty() }
+    }
+
     fun openSetup() = openSettings()
 
     fun closeSetup() = closeSettings()
@@ -202,7 +214,7 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
                 logs = if (message.isNullOrBlank()) state.logs else state.logs + "Mesh: $message\n"
             )
         }
-        if (peers != null || fileProgress != null || transferUpdate != null) refresh()
+        if (peers != null) refresh()
     }
 
     fun appendLog(message: String) {

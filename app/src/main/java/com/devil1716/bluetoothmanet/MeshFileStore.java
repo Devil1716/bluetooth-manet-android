@@ -10,6 +10,7 @@ import java.io.IOException;
 public final class MeshFileStore {
     private MeshFileStore() { }
 
+    public static final int MAX_SEND_BYTES = 2 * 1024 * 1024;
     private static final char PATH_SEPARATOR = '\u0000';
 
     public static String chatLabel(String fileName, String path) {
@@ -30,6 +31,28 @@ public final class MeshFileStore {
 
     public static boolean isFileMessage(String text) {
         return text != null && text.startsWith("📎 ") && text.indexOf(PATH_SEPARATOR) > 0;
+    }
+
+    public static byte[] readLimited(java.io.InputStream input, int maxBytes) throws IOException {
+        if (input == null) throw new IOException("Could not open file");
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        int total = 0;
+        while ((read = input.read(buffer)) != -1) {
+            total += read;
+            if (total > maxBytes) {
+                throw new IOException("File is larger than 2 MB");
+            }
+            output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
+    }
+
+    public static byte[] readLimited(File file, int maxBytes) throws IOException {
+        try (java.io.FileInputStream input = new java.io.FileInputStream(file)) {
+            return readLimited(input, maxBytes);
+        }
     }
 
     public static File save(Context context, String fileName, byte[] bytes) throws IOException {

@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -28,12 +29,12 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
 import com.devil1716.bluetoothmanet.BuildConfig
 import com.devil1716.bluetoothmanet.MainActivity
+import com.devil1716.bluetoothmanet.MeshFileStore
 import com.devil1716.bluetoothmanet.MeshService
 import com.devil1716.bluetoothmanet.PeerDevice
 import com.devil1716.bluetoothmanet.update.AppUpdater
 import com.devil1716.bluetoothmanet.update.UpdateListener
 import com.devil1716.bluetoothmanet.update.UpdatePhase
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.LinkedHashMap
 import java.util.Locale
@@ -54,69 +55,127 @@ class ComposeMeshActivity : ComponentActivity() {
     private var receiversRegistered = false
 
     private val filePickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            handlePickedFile(uri)
+        }
+
+    private val fallbackFilePickerLauncher =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-            val destination = pendingFileDestination
-            pendingFileDestination = null
-            if (uri == null || destination.isNullOrBlank()) return@registerForActivityResult
-            ioExecutor.execute {
-                try {
-                    val size = queryFileSize(uri)
-                    val name = queryDisplayName(uri)
-                    runOnUiThread {
-                        viewModel.setFileTransfer(
-                            FileTransferUi(
-                                phase = FileTransferPhase.SENDING,
-                                fileName = name,
-                                sizeLabel = formatByteSize(size),
-                                completed = 0,
-                                total = 0
-                            )
-                        )
-                    }
-                    contentResolver.openInputStream(uri).use { input ->
-                        if (input == null) throw IllegalStateException("Could not open file")
-                        val output = ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) output.write(buffer, 0, read)
-                        startMeshService()
-                        val sent = MeshService.sendFile(this, destination, name, output.toByteArray())
-                        runOnUiThread {
-                            if (sent) {
-                                viewModel.setFileTransfer(
-                                    FileTransferUi(
-                                        phase = FileTransferPhase.SENDING,
-                                        fileName = name,
-                                        sizeLabel = formatByteSize(size),
-                                        completed = 0,
-                                        total = 0
-                                    )
-                                )
-                                viewModel.onMeshStatus(null, null, "Signed file transfer queued: $name")
-                            } else {
-                                viewModel.setFileTransfer(
-                                    FileTransferUi(
-                                        phase = FileTransferPhase.FAILED,
-                                        fileName = name,
-                                        sizeLabel = formatByteSize(size),
-                                        error = "Couldn't send the file. Stay in the app and try again."
-                                    )
-                                )
-                            }
-                        }
-                    }
-                } catch (error: Exception) {
+            handlePickedFile(uri)
+        }
+
+    private fun handlePickedFile(uri: Uri?) {
+        val destination = pendingFileDestination
+            ?: viewModel.consumePendingFileDestination()
+        pendingFileDestination = null
+        if (uri == null || destination.isNullOrBlank()) return
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: SecurityException) {
+        }
+        ioExecutor.execute {
+            try {
+                val size = queryFileSize(uri)
+                val name = queryDisplayName(uri)
+                if (size > MeshFileStore.MAX_SEND_BYTES) {
                     runOnUiThread {
                         viewModel.setFileTransfer(
                             FileTransferUi(
                                 phase = FileTransferPhase.FAILED,
-                                error = "File error: ${error.message}"
+                                fileName = name,
+                                sizeLabel = formatByteSize(size),
+                                error = "File is larger than 2 MB."
+                            )
+                        )
+                    }
+                    return@execute
+                }
+                runOnUiThread {
+                    viewModel.setFileTransfer(
+                        FileTransferUi(
+                            phase = FileTransferPhase.SENDING,
+                            fileName = name,
+                            sizeLabel = formatByteSize(size),
+                            completed = 0,
+                            total = 0
+                        )
+                    )
+                }
+                val bytes = contentResolver.openInputStream(uri).use { input ->
+                    MeshFileStore.readLimited(input, MeshFileStore.MAX_SEND_BYTES)
+                }
+                startMeshService()
+                val sent = MeshService.sendFile(this, destination, name, bytes)
+                runOnUiThread {
+                    if (sent) {
+                        viewModel.setFileTransfer(
+                            FileTransferUi(
+                                phase = FileTransferPhase.SENDING,
+                                fileName = name,
+                                sizeLabel = formatByteSize(size.takeIf { it > 0 } ?: bytes.size.toLong()),
+                                completed = 0,
+                                total = 0
+                            )
+                        )
+                        viewModel.onMeshStatus(null, null, "File transfer queued: $name")
+                    } else {
+                        viewModel.setFileTransfer(
+                            FileTransferUi(
+                                phase = FileTransferPhase.FAILED,
+                                fileName = name,
+                                sizeLabel = formatByteSize(size.takeIf { it > 0 } ?: bytes.size.toLong()),
+                                error = "Couldn't send the file. Stay in the app and try again."
                             )
                         )
                     }
                 }
+            } catch (error: OutOfMemoryError) {
+                runOnUiThread {
+                    viewModel.setFileTransfer(
+                        FileTransferUi(
+                            phase = FileTransferPhase.FAILED,
+                            error = "That file is too large for this phone."
+                        )
+                    )
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    viewModel.setFileTransfer(
+                        FileTransferUi(
+                            phase = FileTransferPhase.FAILED,
+                            error = humanFileError(error)
+                        )
+                    )
+                }
             }
         }
+    }
+
+    private fun humanFileError(error: Exception): String {
+        val message = error.message.orEmpty()
+        return when {
+            message.contains("larger than 2 MB", ignoreCase = true) -> "File is larger than 2 MB."
+            error is SecurityException -> "Couldn't open that file. Try another one."
+            else -> "Couldn't send the file. Try another one."
+        }
+    }
+
+    private fun launchFilePicker() {
+        try {
+            filePickerLauncher.launch(arrayOf("*/*"))
+        } catch (_: ActivityNotFoundException) {
+            try {
+                fallbackFilePickerLauncher.launch("*/*")
+            } catch (_: ActivityNotFoundException) {
+                viewModel.setFileTransfer(
+                    FileTransferUi(
+                        phase = FileTransferPhase.FAILED,
+                        error = "This phone has no file picker."
+                    )
+                )
+            }
+        }
+    }
 
     private val enableBluetoothLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -288,8 +347,9 @@ class ComposeMeshActivity : ComponentActivity() {
                             )
                         } else {
                             pendingFileDestination = destination
+                            viewModel.setPendingFileDestination(destination)
                             startMeshService()
-                            filePickerLauncher.launch("*/*")
+                            launchFilePicker()
                         }
                     },
                     openFile = { path -> openReceivedFile(path) },
@@ -489,10 +549,13 @@ class ComposeMeshActivity : ComponentActivity() {
         val nodeId = viewModel.uiState.value.nodeId
         getSharedPreferences("mesh", MODE_PRIVATE).edit().putString("node_id", nodeId).apply()
         val serviceIntent = Intent(this, MeshService::class.java).putExtra("node_id", nodeId)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ContextCompat.startForegroundService(this, serviceIntent)
-        } else {
-            startService(serviceIntent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this, serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        } catch (_: RuntimeException) {
         }
     }
 

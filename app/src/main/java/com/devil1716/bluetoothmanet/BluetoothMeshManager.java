@@ -389,7 +389,7 @@ public class BluetoothMeshManager {
             listener.onLog("Destination is required to send a file.");
             return false;
         }
-        if (contents.length > 2 * 1024 * 1024) {
+        if (contents.length > MeshFileStore.MAX_SEND_BYTES) {
             listener.onLog("File is larger than 2 MB. Choose a smaller file.");
             return false;
         }
@@ -398,49 +398,57 @@ public class BluetoothMeshManager {
             return false;
         }
         String safeName = fileName == null ? "file.bin" : fileName.replace("|", "_").replaceAll("[^a-zA-Z0-9._-]", "_");
-        int total = (contents.length + FilePacket.CHUNK_SIZE - 1) / FilePacket.CHUNK_SIZE;
-        String id = UUID.randomUUID().toString();
-        String fileSha = MeshIntegrity.sha256Hex(contents);
-        FilePacket meta = FilePacket.meta(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
-                safeName, total, contents.length, fileSha,
-                signer.sign(MeshIntegrity.fileMetaCanon(id, myNodeId, trimmedDestination, safeName, total, contents.length, fileSha)));
-        OutgoingFile outgoing = new OutgoingFile(meta);
-        outgoingFiles.put(id, outgoing);
-        forwardMessage(signedHello(), null);
-        listener.onLog("Sending signed file " + safeName + " (" + contents.length + " bytes, " + total + " chunks).");
-        int delivered = 0;
-        int chunksDelivered = 0;
-        if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
-        try { Thread.sleep(40); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-        if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
-        for (int index = 0; index < total; index++) {
-            int start = index * FilePacket.CHUNK_SIZE;
-            int end = Math.min(contents.length, start + FilePacket.CHUNK_SIZE);
-            byte[] chunk = java.util.Arrays.copyOfRange(contents, start, end);
-            String chunkSha = MeshIntegrity.sha256Hex(chunk);
-            String data = android.util.Base64.encodeToString(chunk, android.util.Base64.NO_WRAP);
-            FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, id, myNodeId, trimmedDestination,
-                    ManetMessage.DEFAULT_TTL, safeName, index, total, contents.length, chunkSha, data,
-                    signer.sign(MeshIntegrity.fileChunkCanon(id, myNodeId, trimmedDestination, index, total, chunkSha)));
-            outgoing.chunks.add(packet);
-            if (forwardBytes(packet.toBytes(), null) > 0) {
-                delivered++;
-                chunksDelivered++;
+        try {
+            int total = (contents.length + FilePacket.CHUNK_SIZE - 1) / FilePacket.CHUNK_SIZE;
+            String id = UUID.randomUUID().toString();
+            String fileSha = MeshIntegrity.sha256Hex(contents);
+            FilePacket meta = FilePacket.meta(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
+                    safeName, total, contents.length, fileSha,
+                    signer.sign(MeshIntegrity.fileMetaCanon(id, myNodeId, trimmedDestination, safeName, total, contents.length, fileSha)));
+            OutgoingFile outgoing = new OutgoingFile(meta);
+            outgoingFiles.put(id, outgoing);
+            forwardMessage(signedHello(), null);
+            listener.onLog("Sending signed file " + safeName + " (" + contents.length + " bytes, " + total + " chunks).");
+            int delivered = 0;
+            int chunksDelivered = 0;
+            if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
+            try { Thread.sleep(40); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
+            for (int index = 0; index < total; index++) {
+                int start = index * FilePacket.CHUNK_SIZE;
+                int end = Math.min(contents.length, start + FilePacket.CHUNK_SIZE);
+                byte[] chunk = java.util.Arrays.copyOfRange(contents, start, end);
+                String chunkSha = MeshIntegrity.sha256Hex(chunk);
+                String data = android.util.Base64.encodeToString(chunk, android.util.Base64.NO_WRAP);
+                FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, id, myNodeId, trimmedDestination,
+                        ManetMessage.DEFAULT_TTL, safeName, index, total, contents.length, chunkSha, data,
+                        signer.sign(MeshIntegrity.fileChunkCanon(id, myNodeId, trimmedDestination, index, total, chunkSha)));
+                outgoing.chunks.add(packet);
+                if (forwardBytes(packet.toBytes(), null) > 0) {
+                    delivered++;
+                    chunksDelivered++;
+                }
+                listener.onFileProgress(id, index + 1, total, safeName);
+                if (index < total - 1) {
+                    try { Thread.sleep(35); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                }
             }
-            listener.onFileProgress(id, index + 1, total, safeName);
-            if (index < total - 1) {
-                try { Thread.sleep(35); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            boolean sent = chunksDelivered > 0;
+            listener.onLog(sent
+                    ? "File " + safeName + " queued on the mesh with integrity checks."
+                    : "File " + safeName + " could not be written to any peer.");
+            if (sent) {
+                listener.onMessageDelivered(new ManetMessage(id, myNodeId, trimmedDestination,
+                        ManetMessage.DEFAULT_TTL, "Sent file: " + safeName));
             }
+            return sent;
+        } catch (OutOfMemoryError error) {
+            listener.onLog("File is too large to send on this phone.");
+            return false;
+        } catch (RuntimeException error) {
+            listener.onLog("File send failed: " + error.getMessage());
+            return false;
         }
-        boolean sent = chunksDelivered > 0;
-        listener.onLog(sent
-                ? "File " + safeName + " queued on the mesh with integrity checks."
-                : "File " + safeName + " could not be written to any peer.");
-        if (sent) {
-            listener.onMessageDelivered(new ManetMessage(id, myNodeId, trimmedDestination,
-                    ManetMessage.DEFAULT_TTL, "Sent file: " + safeName));
-        }
-        return sent;
     }
 
     private int forwardBytes(byte[] bytes, String exceptAddress) {
