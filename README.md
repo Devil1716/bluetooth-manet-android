@@ -17,7 +17,7 @@ Android mesh messenger: nearby phones talk over a **BitChat-style BLE mesh** (no
 - Launcher: `ComposeMeshActivity` (legacy XML console is `MainActivity`)
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.3.4`
+- Current release: `v1.3.5`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
