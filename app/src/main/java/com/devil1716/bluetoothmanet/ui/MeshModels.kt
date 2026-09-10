@@ -92,7 +92,8 @@ data class MeshUiState(
     val newChatNodeId: String = "",
     val update: UpdateUi = UpdateUi(),
     val permission: PermissionUi = PermissionUi(),
-    val nodeIdCopied: Boolean = false
+    val nodeIdCopied: Boolean = false,
+    val identityConflicts: Map<String, String> = emptyMap()
 ) {
     val updateStatus: String get() = update.message
     val updateBusy: Boolean get() = update.busy

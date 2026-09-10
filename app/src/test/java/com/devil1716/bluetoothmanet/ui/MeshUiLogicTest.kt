@@ -83,9 +83,18 @@ class MeshUiLogicTest {
     @Test
     fun outgoingReceiptsUsePlainLanguage() {
         assertEquals("Sending", messageReceiptLabel(true, "SENDING"))
-        assertEquals("Sent", messageReceiptLabel(true, "SENT"))
+        assertEquals("Waiting for a nearby phone", messageReceiptLabel(true, "QUEUED"))
+        assertEquals("Sent · waiting for confirmation", messageReceiptLabel(true, "SENT"))
         assertEquals("Delivered", messageReceiptLabel(true, "DELIVERED"))
         assertEquals("Couldn't send", messageReceiptLabel(true, "FAILED"))
         assertEquals("", messageReceiptLabel(false, "DELIVERED"))
+    }
+
+    @Test
+    fun nearbyEmptyStateExplainsBluetoothPermissionAndSearch() {
+        assertEquals("Bluetooth is off", nearbyEmptyCopy(true, true, true).title)
+        assertEquals("Permission needed", nearbyEmptyCopy(true, false, false).title)
+        assertEquals("Nearby chat is off", nearbyEmptyCopy(false, false, true).title)
+        assertEquals("Searching nearby…", nearbyEmptyCopy(true, false, true).title)
     }
 }

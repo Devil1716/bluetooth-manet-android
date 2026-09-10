@@ -39,6 +39,7 @@ public class BluetoothMeshManager {
         void onMessageDelivered(ManetMessage message);
         void onMessageStatusChanged(ManetMessage message, MessageStatus status);
         default void onMessageAcknowledged(String messageId) { }
+        default void onPeerIdentityConflict(String nodeId, String fingerprint) { }
         default void onFileProgress(String transferId, int completed, int total, String fileName) { }
         default void onFileReceived(String fileName, String path) { }
     }
@@ -58,12 +59,18 @@ public class BluetoothMeshManager {
     private final ConcurrentHashMap<String, FileTransferBuffer> fileBuffers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> helloSeen = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> peerPublicKeys = new ConcurrentHashMap<>();
+    private final PeerIdentityStore identityStore;
     private final ConcurrentHashMap<String, OutgoingFile> outgoingFiles = new ConcurrentHashMap<>();
     private final AppDatabase database;
     private final PacketSigner signer;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ConcurrentHashMap<String, Integer> pendingAttempts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> pendingRetryAt = new ConcurrentHashMap<>();
+    private final java.util.Random retryJitter = new java.util.Random();
     private MeshLinkBridge extraLinks;
     private static final long SEEN_TTL_MS = 10 * 60 * 1000L;
+    private static final long PENDING_FLUSH_MIN_INTERVAL_MS = 8_000L;
+    private volatile long lastPendingFlushAt;
 
     private volatile boolean accepting;
     private volatile BluetoothServerSocket serverSocket;
@@ -74,7 +81,10 @@ public class BluetoothMeshManager {
         this.listener = listener;
         this.adapter = BluetoothAdapter.getDefaultAdapter();
         this.database = AppDatabase.getInstance(this.appContext);
-        this.signer = new PacketSigner(new File(this.appContext.getFilesDir(), "identity"));
+        File identityDir = new File(this.appContext.getFilesDir(), "identity");
+        this.signer = PacketSigner.createForApp(this.appContext, identityDir);
+        this.identityStore = new PeerIdentityStore(new File(identityDir, "known-peers.txt"));
+        this.peerPublicKeys.putAll(this.identityStore.snapshot());
     }
 
     public void setExtraLinks(MeshLinkBridge extraLinks) {
@@ -224,20 +234,20 @@ public class BluetoothMeshManager {
         ManetMessage message = sign(ManetMessage.outbound(myNodeId, trimmedDestination, trimmedBody, ManetMessage.DEFAULT_TTL));
         listener.onMessageStatusChanged(message, MessageStatus.SENDING);
         markSeen(message.getId());
+        storePending(message);
         if (trimmedDestination.equals(myNodeId)) {
             listener.onMessageDelivered(message);
+            deletePending(message.getId());
             return true;
         }
         if (!hasAnyPeers()) {
-            listener.onLog("No active mesh peers. Stay on this screen so BLE can find nearby phones, or tap a discovered peer.");
-            storePending(message);
-            listener.onMessageStatusChanged(message, MessageStatus.FAILED);
-            return false;
+            listener.onLog("No active mesh peers. Message is queued until a nearby phone links.");
+            listener.onMessageStatusChanged(message, MessageStatus.QUEUED);
+            return true;
         }
-        boolean sent = forwardMessage(message, null) > 0;
-        if (!sent) storePending(message);
-        listener.onMessageStatusChanged(message, sent ? MessageStatus.SENT : MessageStatus.FAILED);
-        return sent;
+        boolean wrote = forwardMessage(message, null) > 0;
+        listener.onMessageStatusChanged(message, MeshDelivery.statusAfterQueueAttempt(true, wrote));
+        return true;
     }
 
     private void registerSocket(BluetoothSocket socket, String label) {
@@ -284,13 +294,34 @@ public class BluetoothMeshManager {
                 handleHello(message, fromAddress);
                 return;
             }
-            if (!markSeen(message.getId())) {
-                return;
-            }
             AuthResult auth = authenticate(message);
             if (auth == AuthResult.TAMPERED) {
+                markSeen(message.getId());
                 listener.onLog("Rejected tampered " + message.getType() + " " + message.getId()
                         + " from " + message.getSource());
+                return;
+            }
+            if (auth == AuthResult.UNKNOWN) {
+                boolean forMe = message.getDestination().equalsIgnoreCase(myNodeId);
+                if (forMe) {
+                    listener.onLog("Holding " + message.getType() + " from " + message.getSource()
+                            + " until its signing key is known.");
+                    return;
+                }
+                if (!markSeen(message.getId())) return;
+                if (message.getTtl() > 1) {
+                    forwardMessage(message.decrementedTtl(),
+                            MeshDelivery.exceptAddress(false, fromAddress));
+                }
+                return;
+            }
+            if (!markSeen(message.getId())) {
+                if (MeshDelivery.shouldResendAckOnDuplicate(
+                        message.getType() == ManetMessage.Type.MSG,
+                        message.getDestination().equalsIgnoreCase(myNodeId))) {
+                    forwardMessage(sign(ManetMessage.ack(myNodeId, message.getSource(), message.getId())),
+                            MeshDelivery.exceptAddress(true, fromAddress));
+                }
                 return;
             }
 
@@ -298,24 +329,27 @@ public class BluetoothMeshManager {
                     + " (ttl=" + message.getTtl() + ")");
 
             if (message.getType() == ManetMessage.Type.ACK) {
-                if (message.getDestination().equalsIgnoreCase(myNodeId) && auth == AuthResult.OK) {
+                if (message.getDestination().equalsIgnoreCase(myNodeId)) {
+                    deletePending(message.getData());
                     listener.onMessageAcknowledged(message.getData());
                     return;
                 }
-                if (message.getTtl() > 1) forwardMessage(message.decrementedTtl(), fromAddress);
+                if (message.getTtl() > 1) {
+                    forwardMessage(message.decrementedTtl(),
+                            MeshDelivery.exceptAddress(false, fromAddress));
+                }
                 return;
             }
 
             boolean broadcast = "ALL".equalsIgnoreCase(message.getDestination())
                     || "*".equals(message.getDestination());
-            if ((message.getDestination().equalsIgnoreCase(myNodeId) || broadcast) && auth == AuthResult.OK) {
+            if (message.getDestination().equalsIgnoreCase(myNodeId) || broadcast) {
                 listener.onMessageDelivered(message);
                 if (message.getDestination().equalsIgnoreCase(myNodeId)) {
-                    forwardMessage(sign(ManetMessage.ack(myNodeId, message.getSource(), message.getId())), fromAddress);
+                    forwardMessage(sign(ManetMessage.ack(myNodeId, message.getSource(), message.getId())),
+                            MeshDelivery.exceptAddress(true, fromAddress));
                     return;
                 }
-            } else if (message.getDestination().equalsIgnoreCase(myNodeId) && auth == AuthResult.UNKNOWN) {
-                listener.onLog("Ignored message from " + message.getSource() + " until its signing key is known.");
             }
 
             if (message.getTtl() <= 1) {
@@ -323,7 +357,8 @@ public class BluetoothMeshManager {
                 return;
             }
 
-            int forwarded = forwardMessage(message.decrementedTtl(), fromAddress);
+            int forwarded = forwardMessage(message.decrementedTtl(),
+                    MeshDelivery.exceptAddress(false, fromAddress));
             if (forwarded == 0 && !broadcast) storePending(message);
         } catch (IllegalArgumentException e) {
             listener.onLog("Ignored malformed payload: " + payload);
@@ -366,15 +401,49 @@ public class BluetoothMeshManager {
         }
     }
 
+    private void deletePending(String messageId) {
+        if (messageId == null || messageId.trim().isEmpty()) return;
+        pendingAttempts.remove(messageId);
+        pendingRetryAt.remove(messageId);
+        executor.execute(() -> database.pendingMessageDao().delete(messageId));
+    }
+
     private void flushPending() {
+        long now = System.currentTimeMillis();
+        if (now - lastPendingFlushAt < PENDING_FLUSH_MIN_INTERVAL_MS) return;
+        lastPendingFlushAt = now;
         executor.execute(() -> {
             long cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L;
+            for (PendingMessageEntity expired : database.pendingMessageDao().all(0L)) {
+                if (expired.createdAt < cutoff) {
+                    try {
+                        ManetMessage message = ManetMessage.fromWire(expired.wire);
+                        listener.onMessageStatusChanged(message, MessageStatus.FAILED);
+                    } catch (IllegalArgumentException ignored) { }
+                    pendingAttempts.remove(expired.id);
+                    pendingRetryAt.remove(expired.id);
+                    database.pendingMessageDao().delete(expired.id);
+                }
+            }
             database.pendingMessageDao().deleteExpired(cutoff);
-            // A node ID handshake is not part of the legacy RFCOMM stream. Attempting
-            // all pending packets lets the normal destination/TTL logic select the route.
+            if (!hasAnyPeers()) return;
+            long nowFlush = System.currentTimeMillis();
             for (PendingMessageEntity pending : database.pendingMessageDao().all(cutoff)) {
-                if (forwardMessage(ManetMessage.fromWire(pending.wire), null) > 0)
-                    database.pendingMessageDao().delete(pending.id);
+                Long retryAt = pendingRetryAt.get(pending.id);
+                if (retryAt != null && nowFlush < retryAt) continue;
+                try {
+                    ManetMessage message = ManetMessage.fromWire(pending.wire);
+                    boolean wrote = forwardMessage(message, null) > 0;
+                    int attempt = pendingAttempts.getOrDefault(pending.id, 0);
+                    pendingAttempts.put(pending.id, attempt + 1);
+                    pendingRetryAt.put(pending.id, nowFlush + MeshDelivery.retryDelayMs(attempt)
+                            + retryJitter.nextInt(1_000));
+                    if (wrote
+                            && message.getSource().equalsIgnoreCase(myNodeId)
+                            && message.getType() == ManetMessage.Type.MSG) {
+                        listener.onMessageStatusChanged(message, MessageStatus.SENT);
+                    }
+                } catch (IllegalArgumentException ignored) { }
             }
         });
     }
@@ -467,6 +536,14 @@ public class BluetoothMeshManager {
             if (!message.hasSignature()
                     || !signer.verify(message.canonical(), message.getSignature(), publicKey)) {
                 listener.onLog("Rejected tampered HELLO from " + fromAddress);
+                return;
+            }
+            PeerIdentityStore.PutResult put = identityStore.putVerified(node, publicKey);
+            if (put == PeerIdentityStore.PutResult.REJECTED_MISMATCH) {
+                listener.onPeerIdentityConflict(node, identityStore.fingerprint(node));
+                listener.onLog("Rejected identity change for " + node
+                        + ". Known fingerprint " + identityStore.fingerprint(node)
+                        + ". The advertised key does not match.");
                 return;
             }
             peerPublicKeys.put(node.toUpperCase(), publicKey);

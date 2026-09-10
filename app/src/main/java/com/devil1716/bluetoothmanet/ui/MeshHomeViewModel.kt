@@ -92,6 +92,18 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun markMeshStopped() {
+        _uiState.update { state ->
+            state.copy(
+                meshStarted = false,
+                livePeerIds = emptyList(),
+                meshStatus = meshStatusChipLabel(false, emptyList()),
+                statusChip = meshStatusChipLabel(false, emptyList()),
+                connectionsLabel = humanConnectionsLabel(false, emptyList())
+            )
+        }
+    }
+
     fun dismissWelcome() {
         prefs.edit().putBoolean("onboarding_welcome_seen", true).apply()
         _uiState.update { it.copy(showWelcome = false) }
@@ -114,7 +126,15 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun setComposerText(text: String) = _uiState.update { it.copy(composerText = text) }
+    fun setComposerText(text: String) {
+        _uiState.update { state ->
+            val id = state.openConversationId
+            if (!id.isNullOrBlank()) {
+                prefs.edit().putString(draftKey(id), text).apply()
+            }
+            state.copy(composerText = text)
+        }
+    }
 
     fun setNewChatNodeId(nodeId: String) = _uiState.update { it.copy(newChatNodeId = nodeId) }
 
@@ -138,10 +158,11 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     fun openThread(conversationId: String) {
         val id = conversationId.trim().uppercase()
         if (id.isEmpty()) return
+        val draft = prefs.getString(draftKey(id), "").orEmpty()
         _uiState.update {
             it.copy(
                 openConversationId = id,
-                composerText = "",
+                composerText = draft,
                 settingsVisible = false,
                 newChatVisible = false,
                 newChatNodeId = ""
@@ -152,7 +173,13 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun closeThread() = _uiState.update { it.copy(openConversationId = null, composerText = "") }
 
-    fun clearComposer() = _uiState.update { it.copy(composerText = "") }
+    fun clearComposer() {
+        val id = _uiState.value.openConversationId
+        if (!id.isNullOrBlank()) prefs.edit().remove(draftKey(id)).apply()
+        _uiState.update { it.copy(composerText = "") }
+    }
+
+    private fun draftKey(conversationId: String) = "draft_" + conversationId.trim().uppercase()
 
     fun setClassicPeers(peers: List<PeerDevice>) = _uiState.update { it.copy(classicPeers = peers) }
 
@@ -185,6 +212,14 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun dismissUpdate() {
         _uiState.update { it.copy(update = it.update.copy(dismissed = true)) }
+    }
+
+    fun noteIdentityConflict(nodeId: String, fingerprint: String) {
+        val id = nodeId.trim()
+        if (id.isEmpty()) return
+        _uiState.update {
+            it.copy(identityConflicts = it.identityConflicts + (id.uppercase() to fingerprint))
+        }
     }
 
     fun onMeshStatus(message: String?, peers: List<String>?, fileProgress: String?) {

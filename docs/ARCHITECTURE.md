@@ -20,7 +20,7 @@ Message router
 Routing manager  (direct route when known, otherwise controlled flood)
 ```
 
-`MeshPacket` stays transport independent. Relays forward opaque payloads and only change TTL / hop metadata. `RoutingManager` prefers a scored next hop from neighbor quality; if no confirmed route exists it floods connected neighbors (BitChat's gossip fallback).
+`MeshPacket` / `InMemoryRoutingManager` exist in Kotlin for tests and a possible future router. The **live** path is Java `BluetoothMeshManager`: signed `ManetMessage` flood with TTL 7, in-memory seen-set, Room `pending_messages` until destination ACK or 24h expiry. BLE and RFCOMM both dump complete application payloads into `BluetoothMeshManager.ingestPayload` / `handleIncoming`.
 
 ## BitChat features included here
 
@@ -44,11 +44,13 @@ Not copied from BitChat (future work): Noise XX sessions, Nostr/internet transpo
 
 ## Security boundary
 
-The Android Keystore / local EC keypair owns this installation's identity. `PacketSigner` uses ECDSA P-256 over SHA-256. Relays forward packets without modifying the signed fields (TTL is excluded from the signature). Destinations drop messages or files whose signature or SHA-256 hash does not match. Unsigned application payloads are treated as tampered.
+See [THREAT_MODEL.md](THREAT_MODEL.md) and [SIGNING.md](SIGNING.md).
+
+Identities are ECDSA P-256 over SHA-256 (`PacketSigner`). New installs prefer Android Keystore; existing PKCS8 files are kept so a reinstall is not implied. Relays must not alter signed fields (TTL is excluded from the signature). **Payloads are not end-to-end encrypted.** A destination that already pinned the sender’s key drops tampered chat and files. HELLO keys are pinned TOFU; a mismatch is a visible identity warning, not a silent overwrite.
 
 ## Persistence
 
-Room stores messages, pending packets, mesh neighbors, routes, and packet history. Migrations preserve the chat database from v1 through v3.
+Room stores messages, pending packets, mesh neighbors, routes, and packet history. Migrations preserve the chat database from v1 through v3. `MessageStatus.QUEUED` was appended to the enum; Room stores status by name, so existing rows are unchanged. The live dedup cache is in-memory (`seenMessages`); the `packet_history` table is not what the Java mesh path uses today.
 
 ## How a packet moves
 

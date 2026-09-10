@@ -392,7 +392,7 @@ class BleGattTransport(
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            // Writes are paced on the GATT worker; the callback is only used for logging.
+            handler.post { onClientWriteComplete(gatt.device.address, status) }
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -459,21 +459,46 @@ class BleGattTransport(
     @SuppressLint("MissingPermission")
     private fun drain(link: GattLink) {
         if (link.sending) return
-        val chunk = link.queue.poll() ?: return
+        val chunk = link.queue.peek() ?: return
         link.sending = true
+        val clientWrite = link.gatt != null && link.remoteCharacteristic != null
         val written = when {
-            link.gatt != null && link.remoteCharacteristic != null -> writeClient(link, chunk)
+            clientWrite -> writeClient(link, chunk)
             link.serverDevice != null && packetCharacteristic != null -> notifyServer(link, chunk)
             else -> false
         }
         if (!written) {
             link.sending = false
+            handler.removeCallbacks(link.writeTimeout)
+            handler.postDelayed({ drain(link) }, 200)
             return
         }
-        handler.postDelayed({
+        if (!clientWrite) {
+            link.queue.poll()
+            handler.postDelayed({
+                link.sending = false
+                drain(link)
+            }, 25)
+            return
+        }
+        handler.removeCallbacks(link.writeTimeout)
+        link.writeTimeout = Runnable {
+            if (!link.sending) return@Runnable
             link.sending = false
             drain(link)
-        }, 25)
+        }
+        handler.postDelayed(link.writeTimeout, 3_000)
+    }
+
+    private fun onClientWriteComplete(address: String, status: Int) {
+        val link = links[address] ?: return
+        handler.removeCallbacks(link.writeTimeout)
+        if (!link.sending) return
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            link.queue.poll()
+        }
+        link.sending = false
+        drain(link)
     }
 
     @SuppressLint("MissingPermission")
@@ -484,10 +509,10 @@ class BleGattTransport(
             gatt.writeCharacteristic(
                 characteristic,
                 chunk,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             ) == BluetoothGatt.GATT_SUCCESS
         } else {
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             characteristic.value = chunk
             gatt.writeCharacteristic(characteristic)
         }
@@ -551,6 +576,7 @@ class BleGattTransport(
         var mtu: Int = MeshGattProtocol.DEFAULT_ATT_MTU
         var notifyEnabled: Boolean = false
         var sending: Boolean = false
+        var writeTimeout: Runnable = Runnable {}
         val queue: ArrayDeque<ByteArray> = ArrayDeque()
         val assembler = LengthPrefixedAssembler()
 

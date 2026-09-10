@@ -6,6 +6,27 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
+def releaseStorePath = System.getenv("MESH_STORE_FILE") ?: keystoreProperties.getProperty("storeFile")
+def releaseStorePassword = System.getenv("MESH_STORE_PASSWORD") ?: keystoreProperties.getProperty("storePassword")
+def releaseKeyAlias = System.getenv("MESH_KEY_ALIAS") ?: keystoreProperties.getProperty("keyAlias")
+def releaseKeyPassword = System.getenv("MESH_KEY_PASSWORD") ?: keystoreProperties.getProperty("keyPassword")
+def releaseStoreFile = null
+if (releaseStorePath != null && !releaseStorePath.toString().trim().isEmpty()) {
+    def candidate = file(releaseStorePath)
+    if (!candidate.exists()) candidate = rootProject.file(releaseStorePath)
+    if (candidate.exists()) releaseStoreFile = candidate
+}
+def hasReleaseSigning = releaseStoreFile != null &&
+        releaseStorePassword != null && !releaseStorePassword.toString().isEmpty() &&
+        releaseKeyAlias != null && !releaseKeyAlias.toString().isEmpty() &&
+        releaseKeyPassword != null && !releaseKeyPassword.toString().isEmpty()
+
 android {
     namespace "com.devil1716.bluetoothmanet"
     compileSdk 34
@@ -14,29 +35,34 @@ android {
         applicationId "com.devil1716.bluetoothmanet"
         minSdk 21
         targetSdk 34
-        versionCode 26
-        versionName "1.4.0"
+        versionCode 27
+        versionName "1.4.1"
 
         testInstrumentationRunner "androidx.test.junit.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        mesh {
-            storeFile file("keystore/mesh-update.jks")
-            storePassword "bluetoothmanet"
-            keyAlias "mesh"
-            keyPassword "bluetoothmanet"
+        release {
+            if (hasReleaseSigning) {
+                storeFile releaseStoreFile
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig signingConfigs.mesh
+            debuggable true
         }
         release {
-            signingConfig signingConfigs.mesh
+            debuggable false
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

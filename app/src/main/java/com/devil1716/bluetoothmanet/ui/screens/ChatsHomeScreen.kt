@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.devil1716.bluetoothmanet.ui.ConversationPreview
 import com.devil1716.bluetoothmanet.ui.MeshHomeTab
+import com.devil1716.bluetoothmanet.ui.NearbyEmptyCopy
 import com.devil1716.bluetoothmanet.ui.components.MeshAtmosphere
 import com.devil1716.bluetoothmanet.ui.components.MeshAvatar
 import com.devil1716.bluetoothmanet.ui.components.MeshPrimaryButton
@@ -64,6 +65,12 @@ fun ChatsHomeScreen(
     onSearchChange: (String) -> Unit,
     onTabChange: (MeshHomeTab) -> Unit,
     onStartMesh: () -> Unit,
+    onNearbyAction: () -> Unit = onStartMesh,
+    nearbyEmpty: NearbyEmptyCopy = NearbyEmptyCopy(
+        title = "No one nearby yet",
+        body = "Start Mesh to discover people around you over Bluetooth.",
+        actionLabel = "Start Mesh"
+    ),
     onConversationClick: (ConversationPreview) -> Unit,
     profile: @Composable () -> Unit
 ) {
@@ -76,8 +83,9 @@ fun ChatsHomeScreen(
             when (selectedTab) {
                 MeshHomeTab.Nearby -> NearbyPane(
                     people = conversations,
+                    emptyCopy = nearbyEmpty,
                     onOpenSaved = { onTabChange(MeshHomeTab.Chats) },
-                    onStartMesh = onStartMesh,
+                    onNearbyAction = onNearbyAction,
                     onPersonClick = onConversationClick,
                     modifier = Modifier.weight(1f)
                 )
@@ -98,8 +106,9 @@ fun ChatsHomeScreen(
 @Composable
 private fun NearbyPane(
     people: List<ConversationPreview>,
+    emptyCopy: NearbyEmptyCopy,
     onOpenSaved: () -> Unit,
-    onStartMesh: () -> Unit,
+    onNearbyAction: () -> Unit,
     onPersonClick: (ConversationPreview) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -132,22 +141,22 @@ private fun NearbyPane(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "No one nearby yet",
+                    text = emptyCopy.title,
                     color = MeshWhite,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "Start Mesh to discover people around you over Bluetooth.",
+                    text = emptyCopy.body,
                     color = MeshMuted,
                     fontSize = 15.sp,
                     modifier = Modifier.padding(top = 8.dp, bottom = 28.dp),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
                 MeshPrimaryButton(
-                    text = "Start Mesh",
+                    text = emptyCopy.actionLabel,
                     modifier = Modifier.width(200.dp),
-                    onClick = onStartMesh
+                    onClick = onNearbyAction
                 )
             }
         } else {

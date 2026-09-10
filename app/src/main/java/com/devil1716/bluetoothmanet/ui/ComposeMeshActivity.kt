@@ -210,6 +210,12 @@ class ComposeMeshActivity : ComponentActivity() {
                 else -> null
             }
             viewModel.onMeshStatus(intent.getStringExtra("message"), peers, fileProgress, transferUpdate)
+            if (intent.getBooleanExtra("mesh_stopped", false)) {
+                viewModel.markMeshStopped()
+            }
+            intent.getStringExtra("identity_conflict")?.let { node ->
+                viewModel.noteIdentityConflict(node, intent.getStringExtra("identity_fingerprint").orEmpty())
+            }
             if (filePath != null) viewModel.refresh()
         }
     }

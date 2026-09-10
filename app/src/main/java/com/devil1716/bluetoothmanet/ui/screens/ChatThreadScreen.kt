@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -30,14 +30,23 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
@@ -59,6 +68,8 @@ import com.devil1716.bluetoothmanet.ui.theme.MeshComposer
 import com.devil1716.bluetoothmanet.ui.theme.MeshIncoming
 import com.devil1716.bluetoothmanet.ui.theme.MeshMuted
 import com.devil1716.bluetoothmanet.ui.theme.MeshWhite
+import com.devil1716.bluetoothmanet.ui.messageReceiptLabel
+import com.devil1716.bluetoothmanet.ui.theme.MeshDanger
 
 @Composable
 fun ChatThreadScreen(
@@ -66,6 +77,7 @@ fun ChatThreadScreen(
     messages: List<ChatMessageEntity>,
     composerText: String,
     fileProgress: String,
+    identityWarning: String? = null,
     onComposerChange: (String) -> Unit,
     onBack: () -> Unit,
     onSend: () -> Unit,
@@ -73,8 +85,29 @@ fun ChatThreadScreen(
     onOpenFile: (String) -> Unit
 ) {
     val listState = rememberLazyListState()
+    val listScope = rememberCoroutineScope()
+    var stickToBottom by remember { mutableStateOf(true) }
+    var unseenWhileReading by remember { mutableStateOf(false) }
+    var lastCount by remember { mutableStateOf(messages.size) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
+            .collect { (scrolling, canScrollForward) ->
+                if (!scrolling) {
+                    stickToBottom = !canScrollForward
+                    if (stickToBottom) unseenWhileReading = false
+                }
+            }
+    }
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+        val grew = messages.size > lastCount
+        lastCount = messages.size
+        if (messages.isEmpty()) return@LaunchedEffect
+        if (stickToBottom) {
+            listState.scrollToItem(messages.lastIndex)
+            unseenWhileReading = false
+        } else if (grew) {
+            unseenWhileReading = true
+        }
     }
     MeshAtmosphere(
         modifier = Modifier
@@ -103,14 +136,22 @@ fun ChatThreadScreen(
                         fontSize = 12.sp
                     )
                 }
-                IconButton(onClick = { }) {
-                    Icon(Icons.Filled.MoreHoriz, contentDescription = "More", tint = MeshWhite)
-                }
             }
+            if (!identityWarning.isNullOrBlank()) {
+                Text(
+                    text = "This phone’s signing key changed. Known fingerprint $identityWarning. New messages from the replacement key are ignored until you confirm the new identity in person.",
+                    color = MeshDanger,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .semantics {
+                            contentDescription = "Identity warning. Fingerprint $identityWarning"
+                        }
+                )
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 state = listState,
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -128,6 +169,28 @@ fun ChatThreadScreen(
                 items(messages, key = { it.id }) { message ->
                     MessageBubble(message = message, onOpenFile = onOpenFile)
                 }
+            }
+            if (unseenWhileReading) {
+                TextButton(
+                    onClick = {
+                        stickToBottom = true
+                        unseenWhileReading = false
+                        listScope.launch {
+                            if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = MeshWhite,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("New messages", color = MeshWhite, fontSize = 13.sp)
+                }
+            }
             }
             if (fileProgress.isNotBlank() && fileProgress != "No file transfer") {
                 Text(
@@ -157,7 +220,7 @@ fun ChatThreadScreen(
                     modifier = Modifier
                         .padding(horizontal = 10.dp)
                         .weight(1f)
-                        .height(48.dp)
+                        .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(24.dp))
                         .background(MeshComposer)
                         .padding(horizontal = 16.dp),
@@ -166,9 +229,13 @@ fun ChatThreadScreen(
                     BasicTextField(
                         value = composerText,
                         onValueChange = onComposerChange,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 24.dp, max = 96.dp)
+                            .semantics { contentDescription = "Message" },
                         textStyle = TextStyle(color = MeshWhite, fontSize = 16.sp),
                         cursorBrush = SolidColor(MeshWhite),
+                        maxLines = 5,
                         decorationBox = { inner ->
                             if (composerText.isEmpty()) {
                                 Text("Message...", color = MeshMuted, fontSize = 16.sp)
@@ -242,17 +309,30 @@ private fun MessageBubble(message: ChatMessageEntity, onOpenFile: (String) -> Un
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(top = 4.dp, start = 6.dp, end = 6.dp)
+            modifier = Modifier
+                .padding(top = 4.dp, start = 6.dp, end = 6.dp)
+                .semantics {
+                    contentDescription = if (outgoing) {
+                        val receipt = messageReceiptLabel(true, message.status.name)
+                        listOf(formatChatTime(message.timestamp), receipt)
+                            .filter { it.isNotBlank() }
+                            .joinToString(". ")
+                    } else {
+                        formatChatTime(message.timestamp)
+                    }
+                }
         ) {
+            val receipt = messageReceiptLabel(outgoing, message.status.name)
             Text(
-                text = formatChatTime(message.timestamp),
-                color = MeshMuted,
+                text = if (receipt.isBlank()) formatChatTime(message.timestamp)
+                else "${formatChatTime(message.timestamp)} · $receipt",
+                color = if (message.status == MessageStatus.FAILED) MeshDanger else MeshMuted,
                 fontSize = 11.sp
             )
-            if (outgoing && message.status != MessageStatus.FAILED) {
+            if (outgoing && message.status == MessageStatus.DELIVERED) {
                 Icon(
                     imageVector = Icons.Filled.Done,
-                    contentDescription = null,
+                    contentDescription = "Delivered",
                     tint = MeshAccent,
                     modifier = Modifier
                         .padding(start = 4.dp)

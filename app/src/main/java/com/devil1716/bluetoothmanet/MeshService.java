@@ -1,6 +1,7 @@
 package com.devil1716.bluetoothmanet;
 
 import android.Manifest;
+import android.app.PendingIntent;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -20,6 +21,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 
 import com.devil1716.bluetoothmanet.bluetooth.gatt.BleGattTransport;
+import com.devil1716.bluetoothmanet.ui.ComposeMeshActivity;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -33,6 +35,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private static final String CHANNEL = "mesh_service";
     public static final String ACTION_MESSAGE_EVENT = "com.devil1716.bluetoothmanet.MESSAGE_EVENT";
     public static final String ACTION_MESH_STATUS = "com.devil1716.bluetoothmanet.MESH_STATUS";
+    public static final String ACTION_STOP = "com.devil1716.bluetoothmanet.STOP_MESH";
     private static volatile BluetoothMeshManager activeManager;
     private final Handler handler = new Handler();
     private BluetoothMeshManager manager;
@@ -116,6 +119,14 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (!foregroundReady) return START_NOT_STICKY;
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName())
+                    .putExtra("mesh_stopped", true)
+                    .putExtra("message", "Nearby chat stopped."));
+            stopForeground(true);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (intent != null && intent.getStringExtra("node_id") != null) {
             nodeId = intent.getStringExtra("node_id").trim().toUpperCase();
             if (manager != null) manager.setMyNodeId(nodeId);
@@ -246,10 +257,20 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     }
 
     private Notification notification(int count) {
+        Intent launch = new Intent(this, ComposeMeshActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent content = PendingIntent.getActivity(this, 0, launch, piFlags);
+        Intent stop = new Intent(this, MeshService.class).setAction(ACTION_STOP);
+        PendingIntent stopPi = PendingIntent.getService(this, 1, stop, piFlags);
         return new NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_stat_mesh)
-                .setContentTitle("Mesh is on").setContentText(
+                .setContentTitle("Mesh is on")
+                .setContentText(
                         count == 0 ? "Looking for nearby phones" :
                                 (count == 1 ? "1 nearby" : count + " nearby"))
+                .setContentIntent(content)
+                .addAction(0, "Stop nearby chat", stopPi)
                 .setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build();
     }
 
@@ -295,7 +316,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     @Override public void onMessageStatusChanged(ManetMessage message, MessageStatus status) {
         dbExecutor.execute(() -> {
-            if (status == MessageStatus.SENDING) {
+            if (status == MessageStatus.SENDING || status == MessageStatus.QUEUED) {
                 database.messageDao().insert(new ChatMessageEntity(message.getId(), message.getDestination(), message.getData(),
                         message.getSource(), System.currentTimeMillis(), status, true));
             } else {
@@ -309,6 +330,14 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         dbExecutor.execute(() -> database.messageDao().updateStatus(messageId, MessageStatus.DELIVERED));
         sendBroadcast(new Intent(ACTION_MESSAGE_EVENT).setPackage(getPackageName())
                 .putExtra("message_id", messageId).putExtra("status", MessageStatus.DELIVERED.name()));
+    }
+
+    @Override public void onPeerIdentityConflict(String nodeId, String fingerprint) {
+        status("Identity warning: " + nodeId + " advertised a different key. Known fingerprint "
+                + fingerprint + ". Messages from the new key are ignored.");
+        sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName())
+                .putExtra("identity_conflict", nodeId)
+                .putExtra("identity_fingerprint", fingerprint));
     }
 
     @Override public void onFileProgress(String transferId, int completed, int total, String fileName) {

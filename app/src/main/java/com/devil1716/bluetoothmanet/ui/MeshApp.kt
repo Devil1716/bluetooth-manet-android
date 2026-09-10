@@ -61,6 +61,9 @@ fun MeshApp(
                 messages = state.threadMessages,
                 composerText = state.composerText,
                 fileProgress = state.fileProgress,
+                identityWarning = state.identityConflicts.entries
+                    .firstOrNull { it.key.equals(openId, true) }
+                    ?.value,
                 onComposerChange = viewModel::setComposerText,
                 onBack = viewModel::closeThread,
                 onSend = {
@@ -78,6 +81,18 @@ fun MeshApp(
                 onSearchChange = viewModel::setSearchQuery,
                 onTabChange = viewModel::setHomeTab,
                 onStartMesh = actions.startMesh,
+                nearbyEmpty = nearbyEmptyCopy(
+                    meshStarted = state.meshStarted,
+                    bluetoothOff = state.permission.bluetoothOff,
+                    permissionsGranted = state.permission.allGranted
+                ),
+                onNearbyAction = {
+                    when {
+                        state.permission.bluetoothOff -> actions.enableBluetooth()
+                        !state.permission.allGranted -> actions.requestPermissions()
+                        else -> actions.startMesh()
+                    }
+                },
                 onConversationClick = { viewModel.openThread(it.id) },
                 profile = {
                     ProfileScreen(

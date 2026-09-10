@@ -9,7 +9,7 @@ Android phones talk over a BitChat-style BLE mesh. A Windows laptop can still jo
 - Finds phones around you automatically (no pairing for phone-to-phone chat).
 - Sends messages and files while you stay in the app.
 - Relays through nearby phones when a direct link is not enough.
-- Signs chat and files so relays cannot tamper with payloads.
+- Signs chat and files so relays cannot *undetectably* tamper with payloads. Messages are **not** end-to-end encrypted; nearby radios and relays can read them.
 
 ## Project notes
 
@@ -18,7 +18,7 @@ Android phones talk over a BitChat-style BLE mesh. A Windows laptop can still jo
 - Launcher: `ComposeMeshActivity` (legacy XML console is `MainActivity`, hidden behind a long-press on the version in Settings → About)
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.4.0`
+- Current release: `v1.4.1`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
@@ -56,12 +56,12 @@ If you want the Windows laptop to join, use the Python CLI in [windows-node](./w
 
 ## Architecture
 
-BLE mesh, flood routing, presence hellos, and store-and-forward are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+BLE mesh, flood routing, presence hellos, and store-and-forward are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Threats and identity limits: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Signing and the leaked upload key: [docs/SIGNING.md](docs/SIGNING.md). Device tests: [docs/HARDWARE_TEST.md](docs/HARDWARE_TEST.md).
 
 ## Publishing a GitHub release
 
-If the app version is bumped but the GitHub "Releases" page still shows the old version, run the **Android Release** workflow manually:
+Do **not** ship `app-debug.apk`. Configure the Actions secrets described in [docs/SIGNING.md](docs/SIGNING.md), then:
 
 1. Open **Actions → Android Release → Run workflow**.
-2. Set `tag` to the version tag (example: `v1.3.7`).
-3. Run the workflow. It builds the APK and publishes/updates the GitHub release for that tag.
+2. Set `tag` to the version tag (example: `v1.4.1`).
+3. The workflow runs unit tests and attaches `app-release.apk` only when release signing secrets are present.

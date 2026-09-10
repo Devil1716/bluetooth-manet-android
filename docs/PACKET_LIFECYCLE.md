@@ -1,16 +1,19 @@
 # Packet lifecycle
 
 ```text
-create → (optional encrypt) → fragment → send on BLE and/or RFCOMM
+create → sign → send on BLE and/or RFCOMM (or persist pending)
                          ↓
-receive → reassemble GATT frames → parse line → deduplicate
+receive → reassemble GATT frames → parse line → authenticate
                                              ↓
-                           destination? ─ yes → deliver + ACK (or save file)
+                           tampered → mark seen, drop
+                           unknown source → hold if for me; else forward once
+                           ok → deduplicate
+                                             ↓
+                           destination? ─ yes → deliver + ACK (resend ACK on duplicate)
                                 ↓ no
-                      choose route if known, else flood
-                      decrement TTL → forward or queue
+                      decrement TTL → forward (split-horizon) or keep pending
 ```
 
-Packets expire when TTL reaches zero (origin TTL is 7, matching BitChat's mesh depth) or their timestamp exceeds the configured retention window. `packet_history` persists replay/deduplication entries. `pending_messages` provides store-and-forward delivery for unavailable peers and is cleaned after 24 hours.
+Packets expire when TTL reaches zero (origin TTL is 7) or pending rows exceed 24 hours (`FAILED` in the chat UI). A successful write to a neighbor is **Sent · waiting for confirmation**, not Delivered. Delivered requires an authenticated ACK bound to that message ID from a peer whose key is pinned.
 
-BLE uses a 4-byte little-endian length prefix plus payload, then splits that stream into `MTU - 3` GATT writes (180-byte application frames after MTU negotiation). The legacy GATT frame codec remains available for tests and future authenticated headers.
+BLE uses a 4-byte little-endian length prefix plus payload, then splits that stream into `MTU - 3` GATT writes. Client writes wait for the GATT callback (or a 3s timeout) before dropping a chunk. Server notifications still use a short delay after the stack accepts the notify. Link completion is not end-to-end delivery.

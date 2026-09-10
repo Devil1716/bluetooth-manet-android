@@ -55,11 +55,47 @@ fun shouldShowGetStarted(
     return !meshStarted || !permissionsReady || !bluetoothOn
 }
 
+data class NearbyEmptyCopy(
+    val title: String,
+    val body: String,
+    val actionLabel: String
+)
+
+fun nearbyEmptyCopy(
+    meshStarted: Boolean,
+    bluetoothOff: Boolean,
+    permissionsGranted: Boolean
+): NearbyEmptyCopy {
+    return when {
+        bluetoothOff -> NearbyEmptyCopy(
+            title = "Bluetooth is off",
+            body = "Turn Bluetooth on so MESH can look for nearby phones.",
+            actionLabel = "Turn on Bluetooth"
+        )
+        !permissionsGranted -> NearbyEmptyCopy(
+            title = "Permission needed",
+            body = "Allow Bluetooth (and Location on older Android) so MESH can discover nearby phones.",
+            actionLabel = "Allow Bluetooth"
+        )
+        !meshStarted -> NearbyEmptyCopy(
+            title = "Nearby chat is off",
+            body = "Start MESH to search for phones around you. Keep the app open or use the Mesh is on notification.",
+            actionLabel = "Start Mesh"
+        )
+        else -> NearbyEmptyCopy(
+            title = "Searching nearby…",
+            body = "No phones linked yet. Stay in range with MESH running. This is not a connection failure — nobody has appeared on the mesh.",
+            actionLabel = "Start Mesh"
+        )
+    }
+}
+
 fun messageReceiptLabel(outgoing: Boolean, statusName: String): String {
     if (!outgoing) return ""
     return when (statusName.uppercase(Locale.US)) {
         "SENDING" -> "Sending"
-        "SENT" -> "Sent"
+        "QUEUED" -> "Waiting for a nearby phone"
+        "SENT" -> "Sent · waiting for confirmation"
         "DELIVERED" -> "Delivered"
         "FAILED" -> "Couldn't send"
         else -> ""
