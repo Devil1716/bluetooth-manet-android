@@ -32,7 +32,6 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.devil1716.bluetoothmanet.update.AppUpdater;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -75,15 +74,11 @@ public class MainActivity extends AppCompatActivity {
                 if (uri == null) return;
                 databaseExecutor.execute(() -> {
                     try (InputStream input = getContentResolver().openInputStream(uri)) {
-                        if (input == null) throw new IllegalStateException("Could not open file");
-                        ByteArrayOutputStream output = new ByteArrayOutputStream();
-                        byte[] buffer = new byte[8192];
-                        int read;
-                        while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
                         String name = queryDisplayName(uri);
+                        byte[] bytes = MeshFileStore.readLimited(input, MeshFileStore.MAX_SEND_BYTES);
                         syncNodeId();
                         boolean sent = MeshService.sendFile(MainActivity.this,
-                                destinationInput.getText().toString(), name, output.toByteArray());
+                                destinationInput.getText().toString(), name, bytes);
                         String result = sent
                                 ? "Signed file transfer queued: " + name
                                 : "File transfer failed. Start mesh and check the event log.";
@@ -306,7 +301,11 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
             syncNodeId();
-            filePickerLauncher.launch("*/*");
+            try {
+                filePickerLauncher.launch("*/*");
+            } catch (android.content.ActivityNotFoundException ignored) {
+                Toast.makeText(this, "This phone has no file picker.", Toast.LENGTH_SHORT).show();
+            }
         });
     }
 

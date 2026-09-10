@@ -110,7 +110,9 @@ fun fileTransferFromLog(message: String?, previous: FileTransferUi): FileTransfe
             previous.copy(phase = FileTransferPhase.FAILED, error = text)
         text.contains("Signed file transfer started", ignoreCase = true) ||
             text.contains("Signed file transfer queued", ignoreCase = true) ||
-            text.startsWith("Waiting for mesh link to send", ignoreCase = true) ->
+            text.contains("File transfer queued", ignoreCase = true) ||
+            text.startsWith("Waiting for mesh link to send", ignoreCase = true) ||
+            text.startsWith("Waiting to send", ignoreCase = true) ->
             previous.copy(
                 phase = FileTransferPhase.SENDING,
                 error = "",
@@ -126,6 +128,9 @@ fun fileTransferFromLog(message: String?, previous: FileTransferUi): FileTransfe
         else -> previous
     }
 }
+
+fun shouldReloadInboxAfterMeshStatus(peersChanged: Boolean, fileReceived: Boolean): Boolean =
+    peersChanged || fileReceived
 
 fun shouldShowFirstRunChecklist(
     conversationCount: Int,

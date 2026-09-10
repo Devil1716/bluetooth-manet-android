@@ -81,6 +81,13 @@ class MeshUiLogicTest {
     }
 
     @Test
+    fun inboxDoesNotReloadOnFileProgressTicks() {
+        assertFalse(shouldReloadInboxAfterMeshStatus(false, false))
+        assertTrue(shouldReloadInboxAfterMeshStatus(true, false))
+        assertTrue(shouldReloadInboxAfterMeshStatus(false, true))
+    }
+
+    @Test
     fun outgoingReceiptsUsePlainLanguage() {
         assertEquals("Sending", messageReceiptLabel(true, "SENDING"))
         assertEquals("Sent", messageReceiptLabel(true, "SENT"))
