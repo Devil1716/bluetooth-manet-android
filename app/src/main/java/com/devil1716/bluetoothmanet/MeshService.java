@@ -246,14 +246,16 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     }
 
     private Notification notification(int count) {
-        return new NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle("MANET mesh active").setContentText(count + " peer(s) connected")
+        return new NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_stat_mesh)
+                .setContentTitle("Mesh is on").setContentText(
+                        count == 0 ? "Looking for nearby phones" :
+                                (count == 1 ? "1 nearby" : count + " nearby"))
                 .setOngoing(true).setCategory(NotificationCompat.CATEGORY_SERVICE).build();
     }
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager.class).createNotificationChannel(
-                new NotificationChannel(CHANNEL, "MANET mesh", NotificationManager.IMPORTANCE_LOW));
+                new NotificationChannel(CHANNEL, "Nearby chat", NotificationManager.IMPORTANCE_LOW));
     }
 
     @Override public void onDestroy() {

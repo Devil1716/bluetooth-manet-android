@@ -29,7 +29,13 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     private val prefs = application.getSharedPreferences("mesh", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private val _uiState = MutableStateFlow(MeshUiState(nodeId = resolveOrCreateNodeId()))
+    private val _uiState = MutableStateFlow(
+        MeshUiState(
+            nodeId = resolveOrCreateNodeId(),
+            showWelcome = !prefs.getBoolean("onboarding_welcome_seen", false),
+            onboardingComplete = prefs.getBoolean("onboarding_complete", false)
+        )
+    )
     val uiState: StateFlow<MeshUiState> = _uiState.asStateFlow()
 
     private var messages: List<ChatMessageEntity> = emptyList()
@@ -71,15 +77,30 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun markMeshStarted() {
+        prefs.edit().putBoolean("onboarding_complete", true).apply()
         _uiState.update { state ->
-            val chip = meshStatusChipLabel(true, state.livePeerIds)
             state.copy(
                 meshStarted = true,
-                meshStatus = if (state.livePeerIds.isEmpty()) "Mesh running" else state.meshStatus,
-                statusChip = chip
+                onboardingComplete = true,
+                meshStatus = meshStatusChipLabel(true, state.livePeerIds),
+                statusChip = meshStatusChipLabel(true, state.livePeerIds),
+                connectionsLabel = humanConnectionsLabel(true, state.livePeerIds)
             )
         }
     }
+
+    fun dismissWelcome() {
+        prefs.edit().putBoolean("onboarding_welcome_seen", true).apply()
+        _uiState.update { it.copy(showWelcome = false) }
+    }
+
+    fun openSettings() = _uiState.update { it.copy(settingsVisible = true, newChatVisible = false) }
+
+    fun closeSettings() = _uiState.update { it.copy(settingsVisible = false) }
+
+    fun openNewChat() = _uiState.update { it.copy(newChatVisible = true, newChatNodeId = "") }
+
+    fun closeNewChat() = _uiState.update { it.copy(newChatVisible = false) }
 
     fun setFileTransfer(transfer: FileTransferUi) {
         _uiState.update {
@@ -94,9 +115,9 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun setNewChatNodeId(nodeId: String) = _uiState.update { it.copy(newChatNodeId = nodeId) }
 
-    fun openSetup() = _uiState.update { it.copy(sheetVisible = true) }
+    fun openSetup() = openSettings()
 
-    fun closeSetup() = _uiState.update { it.copy(sheetVisible = false) }
+    fun closeSetup() = closeSettings()
 
     fun openThread(conversationId: String) {
         val id = conversationId.trim().uppercase()
@@ -105,7 +126,8 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
             it.copy(
                 openConversationId = id,
                 composerText = "",
-                sheetVisible = false,
+                settingsVisible = false,
+                newChatVisible = false,
                 newChatNodeId = ""
             )
         }
@@ -170,19 +192,11 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
             }
             state.copy(
                 meshStarted = started,
-                meshStatus = when {
-                    peers == null && !started -> message ?: state.meshStatus
-                    peerIds.isEmpty() && started -> "Mesh running"
-                    peerIds.isEmpty() -> "Mesh idle"
-                    else -> "${peerIds.size} signed link(s)"
-                },
+                onboardingComplete = state.onboardingComplete || started,
+                meshStatus = meshStatusChipLabel(started, peerIds),
                 statusChip = meshStatusChipLabel(started, peerIds),
                 livePeerIds = peerIds,
-                connectionsLabel = when {
-                    peers == null -> state.connectionsLabel
-                    peerIds.isEmpty() -> "No mesh links yet. Tap Start Mesh on both phones."
-                    else -> peerIds.joinToString(" · ")
-                },
+                connectionsLabel = humanConnectionsLabel(started, peerIds),
                 fileProgress = fileProgress ?: state.fileProgress,
                 fileTransfer = transfer,
                 logs = if (message.isNullOrBlank()) state.logs else state.logs + "Mesh: $message\n"
@@ -221,7 +235,7 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
             else ConversationPreview(
                 id = node,
                 name = displayNameFor(node),
-                preview = "Tap to start a conversation",
+                preview = "No messages yet",
                 timestamp = if (neighbor.lastSeen > 0L) neighbor.lastSeen else 0L,
                 online = neighbor.connected || isOnline(node, onlineNodes),
                 hasAttachment = false
@@ -229,6 +243,9 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         }
         val conversations = (fromMessages + fromNeighbors)
             .sortedWith(compareByDescending<ConversationPreview> { it.online }.thenByDescending { it.timestamp })
+        if (conversations.isNotEmpty() && !prefs.getBoolean("onboarding_complete", false)) {
+            prefs.edit().putBoolean("onboarding_complete", true).apply()
+        }
         val stories = buildStories(conversations, onlineNodes)
         val openId = _uiState.value.openConversationId
         val thread = if (openId == null) emptyList()
@@ -237,7 +254,8 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
             it.copy(
                 conversations = conversations,
                 stories = stories,
-                threadMessages = thread
+                threadMessages = thread,
+                onboardingComplete = it.onboardingComplete || conversations.isNotEmpty()
             )
         }
     }

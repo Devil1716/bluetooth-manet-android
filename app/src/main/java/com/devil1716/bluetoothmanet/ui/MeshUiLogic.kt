@@ -33,13 +33,37 @@ fun parsePeerNodeIds(labels: List<String>): List<String> =
         .distinct()
 
 fun meshStatusChipLabel(started: Boolean, peerIds: List<String>): String {
-    if (!started) return "Idle"
-    if (peerIds.isEmpty()) return "0 links"
-    val shown = peerIds.take(3).joinToString(" · ")
-    val extra = if (peerIds.size > 3) " +${peerIds.size - 3}" else ""
+    if (!started) return "Offline"
+    if (peerIds.isEmpty()) return "Connecting"
     val count = peerIds.size
-    val noun = if (count == 1) "link" else "links"
-    return "$count $noun · $shown$extra"
+    return if (count == 1) "Connected · 1 nearby" else "Connected · $count nearby"
+}
+
+fun humanConnectionsLabel(started: Boolean, peerIds: List<String>): String {
+    if (!started) return "Nearby chat is off"
+    if (peerIds.isEmpty()) return "Looking for phones around you…"
+    return peerIds.joinToString(" · ")
+}
+
+fun shouldShowGetStarted(
+    onboardingComplete: Boolean,
+    meshStarted: Boolean,
+    permissionsReady: Boolean,
+    bluetoothOn: Boolean
+): Boolean {
+    if (onboardingComplete) return false
+    return !meshStarted || !permissionsReady || !bluetoothOn
+}
+
+fun messageReceiptLabel(outgoing: Boolean, statusName: String): String {
+    if (!outgoing) return ""
+    return when (statusName.uppercase(Locale.US)) {
+        "SENDING" -> "Sending"
+        "SENT" -> "Sent"
+        "DELIVERED" -> "Delivered"
+        "FAILED" -> "Couldn't send"
+        else -> ""
+    }
 }
 
 fun formatByteSize(bytes: Long): String {
@@ -96,7 +120,8 @@ fun fileTransferFromLog(message: String?, previous: FileTransferUi): FileTransfe
                 }
             )
         text.startsWith("Received file ", ignoreCase = true) ||
-            text.startsWith("Verified file saved", ignoreCase = true) ->
+            text.startsWith("Verified file saved", ignoreCase = true) ||
+            text.startsWith("File saved", ignoreCase = true) ->
             previous.copy(phase = FileTransferPhase.SUCCESS, error = "")
         else -> previous
     }
@@ -107,4 +132,9 @@ fun shouldShowFirstRunChecklist(
     meshStarted: Boolean,
     permissionsReady: Boolean,
     bluetoothOn: Boolean
-): Boolean = conversationCount == 0 || !meshStarted || !permissionsReady || !bluetoothOn
+): Boolean = shouldShowGetStarted(
+    onboardingComplete = conversationCount > 0,
+    meshStarted = meshStarted,
+    permissionsReady = permissionsReady,
+    bluetoothOn = bluetoothOn
+)

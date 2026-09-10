@@ -28,14 +28,14 @@ class MeshUiLogicTest {
     }
 
     @Test
-    fun meshStatusChipShowsIdleUntilStarted() {
-        assertEquals("Idle", meshStatusChipLabel(false, emptyList()))
-        assertEquals("0 links", meshStatusChipLabel(true, emptyList()))
-        assertEquals("1 link · B4Q1", meshStatusChipLabel(true, listOf("B4Q1")))
-        assertEquals(
-            "2 links · B4Q1 · M8Z2",
-            meshStatusChipLabel(true, listOf("B4Q1", "M8Z2"))
-        )
+    fun meshStatusChipUsesHumanNearbyCopy() {
+        assertEquals("Offline", meshStatusChipLabel(false, emptyList()))
+        assertEquals("Connecting", meshStatusChipLabel(true, emptyList()))
+        assertEquals("Connected · 1 nearby", meshStatusChipLabel(true, listOf("B4Q1")))
+        assertEquals("Connected · 2 nearby", meshStatusChipLabel(true, listOf("B4Q1", "M8Z2")))
+        assertEquals("Nearby chat is off", humanConnectionsLabel(false, emptyList()))
+        assertEquals("Looking for phones around you…", humanConnectionsLabel(true, emptyList()))
+        assertEquals("B4Q1 · M8Z2", humanConnectionsLabel(true, listOf("B4Q1", "M8Z2")))
     }
 
     @Test
@@ -70,10 +70,22 @@ class MeshUiLogicTest {
     }
 
     @Test
-    fun firstRunChecklistStaysUntilMeshAndPermissionsAreReady() {
-        assertTrue(shouldShowFirstRunChecklist(0, false, false, true))
-        assertTrue(shouldShowFirstRunChecklist(0, true, true, true))
-        assertTrue(shouldShowFirstRunChecklist(3, false, true, true))
+    fun getStartedHidesOnceMeshHasWorked() {
+        assertTrue(shouldShowGetStarted(false, false, false, true))
+        assertTrue(shouldShowGetStarted(false, true, false, true))
+        assertFalse(shouldShowGetStarted(false, true, true, true))
+        assertFalse(shouldShowGetStarted(true, false, false, true))
         assertFalse(shouldShowFirstRunChecklist(2, true, true, true))
+        assertFalse(shouldShowFirstRunChecklist(0, true, true, true))
+        assertTrue(shouldShowFirstRunChecklist(0, false, true, true))
+    }
+
+    @Test
+    fun outgoingReceiptsUsePlainLanguage() {
+        assertEquals("Sending", messageReceiptLabel(true, "SENDING"))
+        assertEquals("Sent", messageReceiptLabel(true, "SENT"))
+        assertEquals("Delivered", messageReceiptLabel(true, "DELIVERED"))
+        assertEquals("Couldn't send", messageReceiptLabel(true, "FAILED"))
+        assertEquals("", messageReceiptLabel(false, "DELIVERED"))
     }
 }

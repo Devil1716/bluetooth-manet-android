@@ -99,7 +99,7 @@ class ComposeMeshActivity : ComponentActivity() {
                                         phase = FileTransferPhase.FAILED,
                                         fileName = name,
                                         sizeLabel = formatByteSize(size),
-                                        error = "File transfer failed. Start mesh and check the event log."
+                                        error = "Couldn't send the file. Stay in the app and try again."
                                     )
                                 )
                             }
@@ -120,7 +120,7 @@ class ComposeMeshActivity : ComponentActivity() {
 
     private val enableBluetoothLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            viewModel.appendLog("Bluetooth enable flow finished.")
+            viewModel.appendLog("Bluetooth setup finished.")
             if (bluetoothAdapter?.isEnabled == true) {
                 preloadBondedDevices()
                 maybeAutoStartMesh()
@@ -129,7 +129,7 @@ class ComposeMeshActivity : ComponentActivity() {
 
     private val discoverableLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            viewModel.appendLog("Discoverable request finished.")
+            viewModel.appendLog("Visible-to-devices request finished.")
         }
 
     private val permissionLauncher =
@@ -137,7 +137,7 @@ class ComposeMeshActivity : ComponentActivity() {
             getSharedPreferences("mesh", MODE_PRIVATE).edit().putBoolean("permissions_asked", true).apply()
             val granted = result.isNotEmpty() && result.values.all { it } && missingPermissions().isEmpty()
             refreshPermissionState()
-            viewModel.appendLog(if (granted) "Permissions granted." else "Some Bluetooth permissions were denied.")
+            viewModel.appendLog(if (granted) "Bluetooth permission granted." else "Bluetooth permission was denied.")
             if (granted) {
                 preloadBondedDevices()
                 maybeAutoStartMesh()
@@ -169,9 +169,9 @@ class ComposeMeshActivity : ComponentActivity() {
                         viewModel.setClassicPeers(discoveredPeers.values.toList())
                     }
                 }
-                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> viewModel.appendLog("Discovery started...")
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> viewModel.appendLog("Looking for paired devices…")
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED ->
-                    viewModel.appendLog(String.format(Locale.US, "Discovery finished. %d peer(s) listed.", discoveredPeers.size))
+                    viewModel.appendLog(String.format(Locale.US, "Found %d device(s).", discoveredPeers.size))
             }
         }
     }
@@ -192,7 +192,7 @@ class ComposeMeshActivity : ComponentActivity() {
             val fileProgress = when {
                 filePath != null -> {
                     lastReceivedFilePath = filePath
-                    "Verified file saved. Tap the message to open: $fileName"
+                    "File saved. Tap the message to open: $fileName"
                 }
                 hasFileProgress ->
                     "File $fileName: " +
@@ -243,7 +243,7 @@ class ComposeMeshActivity : ComponentActivity() {
         )
         receiversRegistered = true
 
-        viewModel.appendLog("Mesh v${BuildConfig.VERSION_NAME} ready. Messages and files are ECDSA-signed.")
+        viewModel.appendLog("Mesh v${BuildConfig.VERSION_NAME} ready.")
         refreshPermissionState()
         preloadBondedDevices()
         maybeAutoStartMesh()
@@ -259,32 +259,31 @@ class ComposeMeshActivity : ComponentActivity() {
                     discoverPeers = { startDiscovery() },
                     connectPeer = { peer ->
                         MeshService.connectToAddress(this, peer.address)
-                        viewModel.appendLog("Connecting to ${peer.address} over BLE and RFCOMM...")
+                        viewModel.appendLog("Connecting to ${peer.name ?: peer.address}…")
                     },
                     sendMessage = { destination, body ->
                         if (!viewModel.uiState.value.meshStarted) {
-                            Toast.makeText(this, "Start Mesh before sending.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "Turn on nearby chat first.", Toast.LENGTH_SHORT).show()
                             false
                         } else {
                             startMeshService()
                             val sent = MeshService.sendMessage(this, destination, body)
-                            Toast.makeText(
-                                this,
-                                if (sent) "Message sent into the mesh." else "Message was not sent. Check mesh setup.",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            if (sent) viewModel.refresh()
+                            if (!sent) {
+                                Toast.makeText(this, "Couldn't send. Stay in the app and try again.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.refresh()
+                            }
                             sent
                         }
                     },
                     pickFile = { destination ->
                         if (destination.isBlank()) {
-                            Toast.makeText(this, "Enter the destination node ID before sending a file.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "Open a chat before sending a file.", Toast.LENGTH_SHORT).show()
                         } else if (!viewModel.uiState.value.meshStarted) {
                             viewModel.setFileTransfer(
                                 FileTransferUi(
                                     phase = FileTransferPhase.FAILED,
-                                    error = "Start Mesh before sending a file."
+                                    error = "Turn on nearby chat before sending a file."
                                 )
                             )
                         } else {
@@ -306,7 +305,8 @@ class ComposeMeshActivity : ComponentActivity() {
                     shareNodeId = { shareNodeId() },
                     requestPermissions = { requestNeededPermissions() },
                     openAppSettings = { openAppSettings() },
-                    openLocationSettings = { openLocationSettings() }
+                    openLocationSettings = { openLocationSettings() },
+                    openNotificationSettings = { openNotificationSettings() }
                 )
             )
         }
@@ -379,7 +379,7 @@ class ComposeMeshActivity : ComponentActivity() {
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("Mesh node ID", nodeId))
         viewModel.markNodeIdCopied()
-        viewModel.appendLog("Copied node ID $nodeId")
+        viewModel.appendLog("Copied ID $nodeId")
     }
 
     private fun shareNodeId() {
@@ -387,9 +387,9 @@ class ComposeMeshActivity : ComponentActivity() {
         if (nodeId.isBlank()) return
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, "My mesh node ID is $nodeId. Nearby phones link automatically over BLE — no pairing.")
+            putExtra(Intent.EXTRA_TEXT, "Chat with me on Mesh. My ID is $nodeId — no pairing.")
         }
-        startActivity(Intent.createChooser(send, "Share node ID"))
+        startActivity(Intent.createChooser(send, "Share my ID"))
     }
 
     private fun openAppSettings() {
@@ -404,6 +404,19 @@ class ComposeMeshActivity : ComponentActivity() {
         startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
     }
 
+    private fun openNotificationSettings() {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            }
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+        }
+        startActivity(intent)
+    }
+
     private fun maybeAdd(permissions: MutableList<String>, permission: String) {
         if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(permission)
@@ -414,7 +427,7 @@ class ComposeMeshActivity : ComponentActivity() {
         if (bluetoothAdapter?.isEnabled == false) {
             enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
         } else {
-            viewModel.appendLog("Bluetooth is already enabled.")
+            viewModel.appendLog("Bluetooth is already on.")
         }
     }
 
@@ -428,34 +441,34 @@ class ComposeMeshActivity : ComponentActivity() {
     private fun startDiscovery() {
         val adapter = bluetoothAdapter ?: return
         if (adapter.isEnabled != true) {
-            viewModel.appendLog("Bluetooth is OFF. Enable it before discovery.")
+            viewModel.appendLog("Turn Bluetooth on to find devices.")
             ensureBluetoothEnabled()
             return
         }
         discoveredPeers.clear()
         preloadBondedDevices()
         if (adapter.isDiscovering) adapter.cancelDiscovery()
-        if (adapter.startDiscovery()) viewModel.appendLog("Discovery started...")
-        else viewModel.appendLog("Failed to start discovery.")
+        if (adapter.startDiscovery()) viewModel.appendLog("Looking for paired devices…")
+        else viewModel.appendLog("Couldn't start device search.")
     }
 
     private fun startListening() {
         refreshPermissionState()
         val permission = viewModel.uiState.value.permission
         if (!permission.allGranted) {
-            viewModel.appendLog("Grant Bluetooth permissions before starting the mesh.")
+            viewModel.appendLog("Allow Bluetooth before turning on nearby chat.")
             return
         }
         if (permission.bluetoothOff) {
-            viewModel.appendLog("Bluetooth is OFF. Enable it before starting the mesh.")
+            viewModel.appendLog("Turn Bluetooth on before nearby chat.")
             ensureBluetoothEnabled()
             return
         }
         startMeshService()
         viewModel.markMeshStarted()
-        viewModel.appendLog("Mesh started: BLE dual-role (no pairing) plus RFCOMM for classic/Windows peers.")
+        viewModel.appendLog("Nearby chat is on.")
         if (permission.locationServicesOff) {
-            viewModel.appendLog("Turn on Location in Android settings. Many phones will not BLE-scan while Location is off.")
+            viewModel.appendLog("Turn on Location so this phone can find nearby chats.")
         }
     }
 

@@ -11,34 +11,34 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,22 +54,19 @@ import androidx.compose.ui.unit.sp
 import com.devil1716.bluetoothmanet.ui.ConversationPreview
 import com.devil1716.bluetoothmanet.ui.PermissionUi
 import com.devil1716.bluetoothmanet.ui.StoryPeer
-import com.devil1716.bluetoothmanet.update.UpdatePhase
-import com.devil1716.bluetoothmanet.update.UpdateUi
 import com.devil1716.bluetoothmanet.ui.components.MeshAvatar
 import com.devil1716.bluetoothmanet.ui.formatInboxTime
-import com.devil1716.bluetoothmanet.ui.theme.HeaderGradient
 import com.devil1716.bluetoothmanet.ui.theme.MeshBlack
-import com.devil1716.bluetoothmanet.ui.theme.MeshChipIdle
-import com.devil1716.bluetoothmanet.ui.theme.MeshChipLive
 import com.devil1716.bluetoothmanet.ui.theme.MeshDanger
 import com.devil1716.bluetoothmanet.ui.theme.MeshMint
 import com.devil1716.bluetoothmanet.ui.theme.MeshMuted
-import com.devil1716.bluetoothmanet.ui.theme.MeshOnline
 import com.devil1716.bluetoothmanet.ui.theme.MeshSurface
 import com.devil1716.bluetoothmanet.ui.theme.MeshTheme
 import com.devil1716.bluetoothmanet.ui.theme.MeshWhite
+import com.devil1716.bluetoothmanet.update.UpdatePhase
+import com.devil1716.bluetoothmanet.update.UpdateUi
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatsHomeScreen(
     searchQuery: String,
@@ -94,43 +91,94 @@ fun ChatsHomeScreen(
     onEnableBluetooth: () -> Unit,
     onUpdateAction: () -> Unit = {},
     onDismissUpdate: () -> Unit = {},
+    onNewChat: () -> Unit = {},
     onNearbyClick: (StoryPeer) -> Unit,
     onConversationClick: (ConversationPreview) -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MeshBlack)
-            .navigationBarsPadding()
-    ) {
-        HomeHeader(
-            searchQuery = searchQuery,
-            nearbyPeers = nearbyPeers,
-            nodeId = nodeId,
-            statusChip = statusChip,
-            livePeerIds = livePeerIds,
-            meshStarted = meshStarted,
-            nodeIdCopied = nodeIdCopied,
-            onSearchChange = onSearchChange,
-            onOpenSetup = onOpenSetup,
-            onCopyNodeId = onCopyNodeId,
-            onShareNodeId = onShareNodeId,
-            onNearbyClick = onNearbyClick
-        )
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MeshBlack,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("Chats", fontWeight = FontWeight.Bold)
+                        Text(
+                            text = statusChip,
+                            color = if (livePeerIds.isNotEmpty()) MeshMint else MeshMuted,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = onOpenSetup,
+                        modifier = Modifier.semantics { contentDescription = "Settings" }
+                    ) {
+                        Icon(Icons.Filled.Settings, contentDescription = null, tint = MeshWhite)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MeshBlack,
+                    titleContentColor = MeshWhite,
+                    actionIconContentColor = MeshWhite
+                )
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onNewChat,
+                containerColor = MeshMint,
+                contentColor = MeshBlack,
+                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                text = { Text("New chat", fontWeight = FontWeight.SemiBold) }
+            )
+        }
+    ) { inner ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 8.dp, bottom = 28.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(inner),
+            contentPadding = PaddingValues(bottom = 88.dp)
         ) {
+            item {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .semantics { contentDescription = "Search chats" },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Filled.Search, contentDescription = null, tint = MeshMuted)
+                    },
+                    placeholder = { Text("Search", color = MeshMuted) },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = MeshWhite,
+                        unfocusedTextColor = MeshWhite,
+                        focusedBorderColor = MeshMint,
+                        unfocusedBorderColor = Color(0xFF3A3A3C),
+                        cursorColor = MeshWhite,
+                        focusedContainerColor = MeshSurface,
+                        unfocusedContainerColor = MeshSurface
+                    )
+                )
+            }
+            item {
+                NearbyStrip(
+                    nearbyPeers = nearbyPeers,
+                    onNearbyClick = onNearbyClick
+                )
+            }
             if (update.bannerVisible) {
                 item {
-                    UpdateBanner(
-                        update = update,
-                        onAction = onUpdateAction,
-                        onDismiss = onDismissUpdate
-                    )
+                    UpdateBanner(update = update, onAction = onUpdateAction, onDismiss = onDismissUpdate)
                 }
             }
-            if (permission.showRationale || !permission.allGranted || permission.permanentlyDenied) {
+            if (!showChecklist && (permission.showRationale || !permission.allGranted || permission.permanentlyDenied)) {
                 item {
                     PermissionBanner(
                         permission = permission,
@@ -140,21 +188,18 @@ fun ChatsHomeScreen(
                 }
             }
             if (permission.locationServicesOff) {
-                item {
-                    LocationBanner(onOpenLocationSettings = onOpenLocationSettings)
-                }
+                item { LocationBanner(onOpenLocationSettings = onOpenLocationSettings) }
             }
             if (permission.bluetoothOff) {
-                item {
-                    BluetoothBanner(onEnableBluetooth = onEnableBluetooth)
-                }
+                item { BluetoothBanner(onEnableBluetooth = onEnableBluetooth) }
             }
             if (showChecklist) {
                 item {
-                    FirstRunChecklist(
+                    GetStartedCard(
                         nodeId = nodeId,
                         meshStarted = meshStarted,
                         permission = permission,
+                        nodeIdCopied = nodeIdCopied,
                         onCopyNodeId = onCopyNodeId,
                         onShareNodeId = onShareNodeId,
                         onStartMesh = onStartMesh,
@@ -165,7 +210,10 @@ fun ChatsHomeScreen(
             }
             if (conversations.isEmpty()) {
                 item {
-                    EmptyConversationsHint(meshStarted = meshStarted, nodeId = nodeId)
+                    EmptyConversations(
+                        meshStarted = meshStarted,
+                        onNewChat = onNewChat
+                    )
                 }
             } else {
                 items(conversations, key = { it.id }) { conversation ->
@@ -180,222 +228,129 @@ fun ChatsHomeScreen(
 }
 
 @Composable
-private fun HomeHeader(
-    searchQuery: String,
+private fun NearbyStrip(
     nearbyPeers: List<StoryPeer>,
-    nodeId: String,
-    statusChip: String,
-    livePeerIds: List<String>,
-    meshStarted: Boolean,
-    nodeIdCopied: Boolean,
-    onSearchChange: (String) -> Unit,
-    onOpenSetup: () -> Unit,
-    onCopyNodeId: () -> Unit,
-    onShareNodeId: () -> Unit,
     onNearbyClick: (StoryPeer) -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
-            .background(HeaderGradient)
-            .statusBarsPadding()
-            .padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 18.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                modifier = Modifier
-                    .weight(1f)
-                    .semantics { contentDescription = "Search chats" },
-                singleLine = true,
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = MeshWhite
-                    )
-                },
-                placeholder = { Text("Search chats", color = MeshWhite.copy(alpha = 0.8f)) },
-                shape = RoundedCornerShape(50),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = MeshWhite,
-                    unfocusedTextColor = MeshWhite,
-                    focusedBorderColor = MeshWhite.copy(alpha = 0.7f),
-                    unfocusedBorderColor = MeshWhite.copy(alpha = 0.35f),
-                    cursorColor = MeshWhite,
-                    focusedContainerColor = Color(0x33FFFFFF),
-                    unfocusedContainerColor = Color(0x22FFFFFF)
-                )
+    Column(modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)) {
+        Text(
+            text = "Online",
+            color = MeshMuted,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 10.dp)
+        )
+        if (nearbyPeers.none { it.online }) {
+            Text(
+                text = "Nobody nearby yet",
+                color = MeshMuted,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp)
             )
-            TextButton(
-                onClick = onOpenSetup,
-                modifier = Modifier
-                    .padding(start = 4.dp)
-                    .semantics { contentDescription = "Mesh settings" }
+        } else {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp)
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Filled.Settings, contentDescription = null, tint = MeshWhite)
-                    Text("Setup", color = MeshWhite, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                items(nearbyPeers.filter { it.online }, key = { it.id }) { peer ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .width(64.dp)
+                            .clickable { onNearbyClick(peer) }
+                            .semantics { contentDescription = "Open chat with ${peer.id}" }
+                    ) {
+                        MeshAvatar(name = peer.id, size = 52.dp, online = true)
+                        Text(
+                            text = peer.id,
+                            color = MeshWhite,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
                 }
             }
         }
-        Text(
-            text = "Nearby mesh",
-            color = MeshWhite,
-            fontSize = 30.sp,
-            fontWeight = FontWeight.Bold,
-            lineHeight = 34.sp,
-            modifier = Modifier.padding(top = 18.dp)
-        )
-        Text(
-            text = "Nearby phones link automatically over BLE — no pairing.",
-            color = MeshWhite.copy(alpha = 0.88f),
-            fontSize = 13.sp,
-            modifier = Modifier.padding(top = 6.dp, end = 8.dp)
-        )
-        Row(
-            modifier = Modifier.padding(top = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            NodeIdChip(
-                nodeId = nodeId,
-                copied = nodeIdCopied,
-                onClick = onCopyNodeId
-            )
-            IconButton(
-                onClick = onShareNodeId,
-                modifier = Modifier
-                    .size(36.dp)
-                    .semantics { contentDescription = "Share node ID $nodeId" }
-            ) {
-                Icon(Icons.Filled.Share, contentDescription = null, tint = MeshWhite)
-            }
-            StatusChip(label = statusChip, live = meshStarted && livePeerIds.isNotEmpty())
-        }
-        Text(
-            text = "Nearby",
-            color = MeshWhite.copy(alpha = 0.9f),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
-        )
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(end = 8.dp)
-        ) {
-            item {
-                NearbyPeerItem(
-                    label = "You",
-                    nodeId = nodeId,
-                    online = meshStarted,
-                    onClick = onCopyNodeId
-                )
-            }
-            items(nearbyPeers, key = { it.id }) { peer ->
-                NearbyPeerItem(
-                    label = peer.id,
-                    nodeId = peer.id,
-                    online = peer.online,
-                    onClick = { onNearbyClick(peer) }
-                )
-            }
-        }
     }
 }
 
 @Composable
-private fun NearbyPeerItem(
-    label: String,
+private fun GetStartedCard(
     nodeId: String,
-    online: Boolean,
-    onClick: () -> Unit
+    meshStarted: Boolean,
+    permission: PermissionUi,
+    nodeIdCopied: Boolean,
+    onCopyNodeId: () -> Unit,
+    onShareNodeId: () -> Unit,
+    onStartMesh: () -> Unit,
+    onRequestPermissions: () -> Unit,
+    onEnableBluetooth: () -> Unit
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .width(64.dp)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = if (label == "You") "Your node $nodeId" else "Open chat with $nodeId" }
-    ) {
-        MeshAvatar(name = nodeId, size = 52.dp, online = online)
+    SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text("Turn on nearby chat", color = MeshWhite, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         Text(
-            text = label,
-            color = MeshWhite,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp)
+            text = "Your ID is $nodeId. Share it with the other phone, then both of you stay in the app.",
+            color = MeshMuted,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(top = 4.dp)
         )
-        if (label == "You") {
-            Text(
-                text = nodeId,
-                color = MeshWhite.copy(alpha = 0.85f),
-                fontSize = 10.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        } else {
-            Text(
-                text = "chat",
-                color = MeshWhite.copy(alpha = 0.75f),
-                fontSize = 10.sp
-            )
+        Row(modifier = Modifier.padding(top = 8.dp)) {
+            TextButton(onClick = onCopyNodeId) {
+                Text(if (nodeIdCopied) "Copied" else "Copy ID", color = MeshMint)
+            }
+            TextButton(onClick = onShareNodeId) { Text("Share", color = MeshMint) }
+        }
+        val action = when {
+            !permission.allGranted && !permission.permanentlyDenied ->
+                "Allow Bluetooth" to onRequestPermissions
+            permission.bluetoothOff -> "Turn on Bluetooth" to onEnableBluetooth
+            !meshStarted -> "Start nearby chat" to onStartMesh
+            else -> null
+        }
+        if (action != null) {
+            Button(
+                onClick = action.second,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MeshMint, contentColor = MeshBlack)
+            ) {
+                Text(action.first)
+            }
         }
     }
 }
 
 @Composable
-private fun NodeIdChip(nodeId: String, copied: Boolean, onClick: () -> Unit) {
-    val label = if (copied) "Copied $nodeId" else "You · $nodeId"
-    Row(
+private fun EmptyConversations(meshStarted: Boolean, onNewChat: () -> Unit) {
+    Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color(0x33000000))
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = "Your node ID $nodeId, tap to copy" }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .fillMaxWidth()
+            .padding(horizontal = 28.dp, vertical = 36.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        MeshAvatar(name = "Mesh", size = 72.dp, online = meshStarted)
         Text(
-            text = label,
+            text = "No chats yet",
             color = MeshWhite,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold
+            fontSize = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 16.dp)
         )
-    }
-}
-
-@Composable
-private fun StatusChip(label: String, live: Boolean) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (live) MeshChipLive else MeshChipIdle)
-            .semantics { contentDescription = "Mesh status $label" }
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(if (live) MeshOnline else MeshWhite.copy(alpha = 0.7f))
-        )
-        Spacer(Modifier.width(6.dp))
         Text(
-            text = label,
-            color = MeshWhite,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 160.dp)
+            text = if (meshStarted) {
+                "When someone is online, tap their ID. Or start a chat if you already have it."
+            } else {
+                "Turn on nearby chat, then message a phone around you."
+            },
+            color = MeshMuted,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(top = 8.dp)
         )
+        TextButton(onClick = onNewChat, modifier = Modifier.padding(top = 8.dp)) {
+            Text("Start a chat", color = MeshMint, fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -407,7 +362,6 @@ private fun UpdateBanner(
 ) {
     val accent = when (update.phase) {
         UpdatePhase.FAILED, UpdatePhase.SIGNATURE_CONFLICT -> MeshDanger
-        UpdatePhase.DOWNLOADING, UpdatePhase.INSTALLING -> MeshMint
         else -> MeshMint
     }
     SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -415,10 +369,10 @@ private fun UpdateBanner(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = when (update.phase) {
-                        UpdatePhase.AVAILABLE -> "Mesh ${update.availableVersion} is available"
-                        UpdatePhase.DOWNLOADING -> "Downloading Mesh ${update.availableVersion}"
-                        UpdatePhase.READY -> "Mesh ${update.availableVersion} is ready"
-                        UpdatePhase.INSTALLING -> "Installing Mesh ${update.availableVersion}"
+                        UpdatePhase.AVAILABLE -> "Update available"
+                        UpdatePhase.DOWNLOADING -> "Downloading update"
+                        UpdatePhase.READY -> "Update ready to install"
+                        UpdatePhase.INSTALLING -> "Installing update"
                         UpdatePhase.NEEDS_PERMISSION -> "Allow Mesh to install updates"
                         UpdatePhase.SIGNATURE_CONFLICT -> "This install can't be replaced"
                         UpdatePhase.FAILED -> "Update didn't finish"
@@ -429,9 +383,7 @@ private fun UpdateBanner(
                     fontSize = 16.sp
                 )
                 Text(
-                    text = update.message.ifBlank {
-                        "Tap to update without leaving your chats."
-                    },
+                    text = update.message.ifBlank { "Tap to update without leaving your chats." },
                     color = MeshMuted,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(top = 4.dp)
@@ -440,42 +392,29 @@ private fun UpdateBanner(
             if (update.phase != UpdatePhase.DOWNLOADING && update.phase != UpdatePhase.INSTALLING) {
                 IconButton(
                     onClick = onDismiss,
-                    modifier = Modifier
-                        .size(32.dp)
-                        .semantics { contentDescription = "Dismiss update" }
+                    modifier = Modifier.size(32.dp).semantics { contentDescription = "Dismiss update" }
                 ) {
                     Icon(Icons.Filled.Close, contentDescription = null, tint = MeshMuted)
                 }
             }
         }
         if (update.phase == UpdatePhase.DOWNLOADING || update.phase == UpdatePhase.INSTALLING) {
+            val indicatorMod = Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(4.dp))
             if (update.progress > 0f) {
                 LinearProgressIndicator(
                     progress = { update.progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp)
-                        .clip(RoundedCornerShape(4.dp)),
+                    modifier = indicatorMod,
                     color = accent,
                     trackColor = Color(0xFF2A2A2A)
                 )
             } else {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp)
-                        .clip(RoundedCornerShape(4.dp)),
-                    color = accent,
-                    trackColor = Color(0xFF2A2A2A)
-                )
+                LinearProgressIndicator(modifier = indicatorMod, color = accent, trackColor = Color(0xFF2A2A2A))
             }
         }
         Button(
             onClick = onAction,
             enabled = update.phase != UpdatePhase.DOWNLOADING && update.phase != UpdatePhase.INSTALLING,
-            modifier = Modifier
-                .padding(top = 12.dp)
-                .fillMaxWidth(),
+            modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = MeshBlack)
         ) {
             Text(update.primaryLabel)
@@ -499,9 +438,9 @@ private fun PermissionBanner(
         )
         Text(
             text = if (denied) {
-                "Permissions were denied. Open Android settings, allow Bluetooth (and Location if shown), then return here."
+                "Open Android settings and allow Bluetooth (and Location if shown), then come back."
             } else {
-                "This app uses Bluetooth Low Energy to find nearby phones. No pairing or accounts. Location is only used so Android can BLE-scan."
+                "Mesh uses Bluetooth to find phones around you. No pairing or account. Location is only so Android can look for nearby devices."
             },
             color = MeshMuted,
             fontSize = 13.sp,
@@ -509,12 +448,10 @@ private fun PermissionBanner(
         )
         Button(
             onClick = if (denied) onOpenAppSettings else onRequestPermissions,
-            modifier = Modifier
-                .padding(top = 12.dp)
-                .fillMaxWidth(),
+            modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = MeshMint, contentColor = MeshBlack)
         ) {
-            Text(if (denied) "Open app settings" else "Continue to system prompt")
+            Text(if (denied) "Open app settings" else "Continue")
         }
     }
 }
@@ -528,16 +465,14 @@ private fun LocationBanner(onOpenLocationSettings: () -> Unit) {
             Text("Location is off", color = MeshWhite, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
         }
         Text(
-            text = "Many phones will not BLE-scan while Location is off. Turn it on, then Start Mesh.",
+            text = "Many phones won't find nearby chats while Location is off.",
             color = MeshMuted,
             fontSize = 13.sp,
             modifier = Modifier.padding(top = 6.dp)
         )
         Button(
             onClick = onOpenLocationSettings,
-            modifier = Modifier
-                .padding(top = 12.dp)
-                .fillMaxWidth(),
+            modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A), contentColor = MeshWhite)
         ) {
             Text("Open Location settings")
@@ -550,152 +485,19 @@ private fun BluetoothBanner(onEnableBluetooth: () -> Unit) {
     SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Text("Bluetooth is off", color = MeshWhite, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
         Text(
-            text = "Turn Bluetooth on so nearby phones can link over BLE.",
+            text = "Turn Bluetooth on so nearby phones can chat.",
             color = MeshMuted,
             fontSize = 13.sp,
             modifier = Modifier.padding(top = 6.dp)
         )
         Button(
             onClick = onEnableBluetooth,
-            modifier = Modifier
-                .padding(top = 12.dp)
-                .fillMaxWidth(),
+            modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = MeshMint, contentColor = MeshBlack)
         ) {
-            Text("Enable Bluetooth")
+            Text("Turn on Bluetooth")
         }
     }
-}
-
-@Composable
-private fun FirstRunChecklist(
-    nodeId: String,
-    meshStarted: Boolean,
-    permission: PermissionUi,
-    onCopyNodeId: () -> Unit,
-    onShareNodeId: () -> Unit,
-    onStartMesh: () -> Unit,
-    onRequestPermissions: () -> Unit,
-    onEnableBluetooth: () -> Unit
-) {
-    SurfaceCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Text("Get to the first chat", color = MeshWhite, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        Text(
-            text = "Share your ID with the other phone. Phone-to-phone does not use classic pairing.",
-            color = MeshMuted,
-            fontSize = 13.sp,
-            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
-        )
-        ChecklistRow(
-            done = nodeId.isNotBlank(),
-            title = "Your node ID is $nodeId",
-            subtitle = "Tap to copy. Each phone needs a unique ID."
-        ) {
-            TextButton(onClick = onCopyNodeId) { Text("Copy", color = MeshMint) }
-            IconButton(
-                onClick = onShareNodeId,
-                modifier = Modifier.semantics { contentDescription = "Share node ID" }
-            ) {
-                Icon(Icons.Filled.Share, contentDescription = null, tint = MeshMint)
-            }
-        }
-        ChecklistRow(
-            done = permission.allGranted,
-            title = "Allow Bluetooth",
-            subtitle = if (permission.permanentlyDenied) {
-                "Denied — recover from the banner above."
-            } else {
-                "In-app explanation first, then the system dialog."
-            }
-        ) {
-            if (!permission.allGranted && !permission.permanentlyDenied) {
-                TextButton(onClick = onRequestPermissions) { Text("Allow", color = MeshMint) }
-            }
-        }
-        if (permission.bluetoothOff) {
-            ChecklistRow(done = false, title = "Turn Bluetooth on", subtitle = "Required before Start Mesh.") {
-                TextButton(onClick = onEnableBluetooth) { Text("Enable", color = MeshMint) }
-            }
-        }
-        val startEnabled = permission.readyForMesh
-        ChecklistRow(
-            done = meshStarted,
-            title = if (meshStarted) "Mesh is running" else "Start Mesh",
-            subtitle = if (meshStarted) {
-                "Waiting for a nearby phone with a different node ID."
-            } else {
-                "Primary action after permissions. Both phones must start the mesh."
-            }
-        ) {
-            if (!meshStarted) {
-                Button(
-                    onClick = onStartMesh,
-                    enabled = startEnabled,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MeshMint,
-                        contentColor = MeshBlack,
-                        disabledContainerColor = Color(0xFF2A2A2A),
-                        disabledContentColor = MeshMuted
-                    )
-                ) {
-                    Text("Start Mesh")
-                }
-            }
-        }
-        ChecklistRow(
-            done = false,
-            title = "Share $nodeId with your peer",
-            subtitle = "They start a chat with this ID, or appear under Nearby."
-        ) {
-            TextButton(onClick = onShareNodeId) { Text("Share", color = MeshMint) }
-        }
-    }
-}
-
-@Composable
-private fun ChecklistRow(
-    done: Boolean,
-    title: String,
-    subtitle: String,
-    action: @Composable () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(22.dp)
-                .clip(CircleShape)
-                .background(if (done) MeshOnline else Color(0xFF2A2A2A)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (done) {
-                Icon(Icons.Filled.Check, contentDescription = "Done", tint = MeshBlack, modifier = Modifier.size(14.dp))
-            }
-        }
-        Column(modifier = Modifier.weight(1f).padding(horizontal = 10.dp)) {
-            Text(title, color = MeshWhite, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, color = MeshMuted, fontSize = 12.sp)
-        }
-        action()
-    }
-}
-
-@Composable
-private fun EmptyConversationsHint(meshStarted: Boolean, nodeId: String) {
-    Text(
-        text = if (meshStarted) {
-            "No chats yet. When a neighbor appears under Nearby, tap it — or share $nodeId so they can message you."
-        } else {
-            "No conversations yet. Finish the checklist above to start the mesh."
-        },
-        color = MeshMuted,
-        fontSize = 14.sp,
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
-    )
 }
 
 @Composable
@@ -782,30 +584,28 @@ private fun ConversationRow(
 @Composable
 private fun ChatsHomePreview() {
     MeshTheme {
-        Box(Modifier.background(MeshBlack)) {
-            ChatsHomeScreen(
-                searchQuery = "",
-                conversations = emptyList(),
-                nearbyPeers = emptyList(),
-                nodeId = "K7M2",
-                statusChip = "Idle",
-                livePeerIds = emptyList(),
-                meshStarted = false,
-                permission = PermissionUi(showRationale = true),
-                nodeIdCopied = false,
-                showChecklist = true,
-                onSearchChange = {},
-                onOpenSetup = {},
-                onCopyNodeId = {},
-                onShareNodeId = {},
-                onStartMesh = {},
-                onRequestPermissions = {},
-                onOpenAppSettings = {},
-                onOpenLocationSettings = {},
-                onEnableBluetooth = {},
-                onNearbyClick = {},
-                onConversationClick = {}
-            )
-        }
+        ChatsHomeScreen(
+            searchQuery = "",
+            conversations = emptyList(),
+            nearbyPeers = emptyList(),
+            nodeId = "K7M2",
+            statusChip = "Connecting",
+            livePeerIds = emptyList(),
+            meshStarted = true,
+            permission = PermissionUi(allGranted = true, showRationale = false),
+            nodeIdCopied = false,
+            showChecklist = false,
+            onSearchChange = {},
+            onOpenSetup = {},
+            onCopyNodeId = {},
+            onShareNodeId = {},
+            onStartMesh = {},
+            onRequestPermissions = {},
+            onOpenAppSettings = {},
+            onOpenLocationSettings = {},
+            onEnableBluetooth = {},
+            onNearbyClick = {},
+            onConversationClick = {}
+        )
     }
 }

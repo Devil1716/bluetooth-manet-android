@@ -5,14 +5,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,13 +20,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -48,6 +49,7 @@ import com.devil1716.bluetoothmanet.ui.FileTransferPhase
 import com.devil1716.bluetoothmanet.ui.FileTransferUi
 import com.devil1716.bluetoothmanet.ui.components.MeshAvatar
 import com.devil1716.bluetoothmanet.ui.formatInboxTime
+import com.devil1716.bluetoothmanet.ui.messageReceiptLabel
 import com.devil1716.bluetoothmanet.ui.theme.MeshBlack
 import com.devil1716.bluetoothmanet.ui.theme.MeshDanger
 import com.devil1716.bluetoothmanet.ui.theme.MeshIncoming
@@ -58,6 +60,7 @@ import com.devil1716.bluetoothmanet.ui.theme.MeshOutgoing
 import com.devil1716.bluetoothmanet.ui.theme.MeshSurface
 import com.devil1716.bluetoothmanet.ui.theme.MeshWhite
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatThreadScreen(
     conversation: ConversationPreview,
@@ -76,123 +79,144 @@ fun ChatThreadScreen(
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
     }
-    Column(
+    Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .background(MeshBlack)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .imePadding()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MeshWhite)
-            }
-            MeshAvatar(name = conversation.name, size = 40.dp, online = conversation.online)
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(conversation.name, color = MeshWhite, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    text = buildString {
-                        append("Node ")
-                        append(conversation.id)
-                        append(" · ")
-                        append(if (conversation.online) "Online" else "Mesh")
-                    },
-                    color = MeshMint,
-                    fontSize = 12.sp
+            .imePadding(),
+        containerColor = MeshBlack,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MeshAvatar(name = conversation.name, size = 36.dp, online = conversation.online)
+                        Column(modifier = Modifier.padding(start = 12.dp)) {
+                            Text(conversation.name, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                            Text(
+                                text = if (conversation.online) "Online" else "Nearby",
+                                color = if (conversation.online) MeshMint else MeshMuted,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MeshWhite)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MeshBlack,
+                    titleContentColor = MeshWhite,
+                    navigationIconContentColor = MeshWhite
                 )
-            }
-        }
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (messages.isEmpty()) {
-                item {
-                    Text(
-                        text = "No messages yet. Say hello over the mesh.",
-                        color = MeshMuted,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(top = 24.dp)
-                    )
-                }
-            }
-            items(messages, key = { it.id }) { message ->
-                MessageBubble(message = message, onOpenFile = onOpenFile)
-            }
-        }
-        if (fileTransfer.visible) {
-            FileTransferBanner(transfer = fileTransfer)
-        }
-        if (!meshStarted) {
-            Text(
-                text = "Start Mesh on the home screen before sending. Store-and-forward needs the radio running.",
-                color = MeshDanger,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
             )
         }
-        Row(
+    ) { inner ->
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 8.dp, end = 8.dp, bottom = 12.dp, top = 4.dp),
-            verticalAlignment = Alignment.Bottom
+                .fillMaxSize()
+                .padding(inner)
+                .navigationBarsPadding()
         ) {
-            IconButton(
-                onClick = onAttach,
-                enabled = meshStarted,
-                modifier = Modifier.semantics { contentDescription = "Attach file" }
-            ) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = null,
-                    tint = if (meshStarted) MeshWhite else MeshMuted
-                )
-            }
-            OutlinedTextField(
-                value = composerText,
-                onValueChange = onComposerChange,
+            LazyColumn(
                 modifier = Modifier
                     .weight(1f)
-                    .semantics { contentDescription = "Message composer" },
-                enabled = meshStarted,
-                placeholder = { Text(if (meshStarted) "Signed message" else "Mesh idle") },
-                shape = RoundedCornerShape(24.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = MeshWhite,
-                    unfocusedTextColor = MeshWhite,
-                    disabledTextColor = MeshMuted,
-                    focusedBorderColor = MeshMint,
-                    unfocusedBorderColor = Color(0xFF3A3A3C),
-                    cursorColor = MeshWhite,
-                    focusedContainerColor = MeshSurface,
-                    unfocusedContainerColor = MeshSurface,
-                    disabledContainerColor = MeshSurface
-                )
-            )
-            IconButton(
-                onClick = onSend,
-                enabled = canSend,
-                modifier = Modifier
-                    .padding(start = 4.dp)
-                    .clip(CircleShape)
-                    .semantics { contentDescription = "Send message" }
+                    .fillMaxWidth(),
+                state = listState,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = null,
-                    tint = if (canSend) MeshMint else MeshMuted
+                if (messages.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 48.dp, start = 24.dp, end = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                "No messages yet",
+                                color = MeshWhite,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "Say hello. It stays on this phone until they’re nearby.",
+                                color = MeshMuted,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                }
+                items(messages, key = { it.id }) { message ->
+                    MessageBubble(message = message, onOpenFile = onOpenFile)
+                }
+            }
+            if (fileTransfer.visible) {
+                FileTransferBanner(transfer = fileTransfer)
+            }
+            if (!meshStarted) {
+                Text(
+                    text = "Turn on nearby chat to send messages.",
+                    color = MeshDanger,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                 )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, end = 8.dp, bottom = 12.dp, top = 4.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                IconButton(
+                    onClick = onAttach,
+                    enabled = meshStarted,
+                    modifier = Modifier.semantics { contentDescription = "Attach file" }
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = if (meshStarted) MeshWhite else MeshMuted
+                    )
+                }
+                OutlinedTextField(
+                    value = composerText,
+                    onValueChange = onComposerChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "Message composer" },
+                    enabled = meshStarted,
+                    placeholder = { Text(if (meshStarted) "Message" else "Nearby chat is off") },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = MeshWhite,
+                        unfocusedTextColor = MeshWhite,
+                        disabledTextColor = MeshMuted,
+                        focusedBorderColor = MeshMint,
+                        unfocusedBorderColor = Color(0xFF3A3A3C),
+                        cursorColor = MeshWhite,
+                        focusedContainerColor = MeshSurface,
+                        unfocusedContainerColor = MeshSurface,
+                        disabledContainerColor = MeshSurface
+                    )
+                )
+                IconButton(
+                    onClick = onSend,
+                    enabled = canSend,
+                    modifier = Modifier
+                        .padding(start = 4.dp)
+                        .clip(CircleShape)
+                        .semantics { contentDescription = "Send message" }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = null,
+                        tint = if (canSend) MeshMint else MeshMuted
+                    )
+                }
             }
         }
     }
@@ -211,20 +235,20 @@ private fun FileTransferBanner(transfer: FileTransferUi) {
             },
             MeshMint,
             if (transfer.total > 0) {
-                "${transfer.completed}/${transfer.total} chunks"
+                "Sending… ${(transfer.progress * 100).toInt()}%"
             } else {
-                "Sending over the mesh…"
+                "Sending…"
             }
         )
         FileTransferPhase.SUCCESS -> Triple(
             "${transfer.fileName.ifBlank { "File" }} sent",
             MeshOnline,
-            if (transfer.sizeLabel.isNotBlank()) transfer.sizeLabel else "Transfer complete"
+            if (transfer.sizeLabel.isNotBlank()) transfer.sizeLabel else "Delivered to this chat"
         )
         FileTransferPhase.FAILED -> Triple(
-            "File failed",
+            "Couldn't send file",
             MeshDanger,
-            transfer.error.ifBlank { "Start mesh and try again." }
+            transfer.error.ifBlank { "Stay in the app and try again." }
         )
         FileTransferPhase.NONE -> return
     }
@@ -268,6 +292,20 @@ private fun MessageBubble(message: ChatMessageEntity, onOpenFile: (String) -> Un
     val outgoing = message.sentByMe
     val path = MeshFileStore.embeddedPath(message.text)
     val isFile = MeshFileStore.isFileMessage(message.text)
+    val receipt = messageReceiptLabel(outgoing, message.status.name)
+    val failed = outgoing && message.status.name.equals("FAILED", ignoreCase = true)
+    val time = formatInboxTime(message.timestamp)
+    val meta = buildString {
+        if (isFile) append("File")
+        if (time.isNotEmpty()) {
+            if (isNotEmpty()) append("  ·  ")
+            append(time)
+        }
+        if (receipt.isNotEmpty()) {
+            if (isNotEmpty()) append("  ·  ")
+            append(receipt)
+        }
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (outgoing) Alignment.End else Alignment.Start
@@ -291,23 +329,14 @@ private fun MessageBubble(message: ChatMessageEntity, onOpenFile: (String) -> Un
                 color = MeshWhite,
                 fontSize = 16.sp
             )
-            Text(
-                text = buildString {
-                    append(formatInboxTime(message.timestamp))
-                    append("  ·  ")
-                    append(
-                        when {
-                            isFile && outgoing -> "file · ${message.status.name.lowercase()}"
-                            outgoing -> message.status.name.lowercase()
-                            isFile -> "file · verified"
-                            else -> "verified"
-                        }
-                    )
-                },
-                color = MeshMuted,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(top = 4.dp)
-            )
+            if (meta.isNotEmpty()) {
+                Text(
+                    text = meta,
+                    color = if (failed) MeshDanger else MeshMuted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
             if (path != null) {
                 TextButton(
                     onClick = { onOpenFile(path) },
