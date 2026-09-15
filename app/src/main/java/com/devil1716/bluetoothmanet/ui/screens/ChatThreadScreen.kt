@@ -1,5 +1,16 @@
 package com.devil1716.bluetoothmanet.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -48,6 +60,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -68,7 +81,10 @@ import com.devil1716.bluetoothmanet.ui.theme.MeshComposer
 import com.devil1716.bluetoothmanet.ui.theme.MeshIncoming
 import com.devil1716.bluetoothmanet.ui.theme.MeshMuted
 import com.devil1716.bluetoothmanet.ui.theme.MeshWhite
+import com.devil1716.bluetoothmanet.ui.FileTransferPhase
+import com.devil1716.bluetoothmanet.ui.FileTransferUi
 import com.devil1716.bluetoothmanet.ui.messageReceiptLabel
+import com.devil1716.bluetoothmanet.ui.requestPrompt
 import com.devil1716.bluetoothmanet.ui.theme.MeshDanger
 
 @Composable
@@ -78,11 +94,16 @@ fun ChatThreadScreen(
     composerText: String,
     fileProgress: String,
     identityWarning: String? = null,
+    fileTransfer: FileTransferUi = FileTransferUi(),
+    /** When true the peer has not been accepted yet and replying is blocked. */
+    pendingRequest: Boolean = false,
     onComposerChange: (String) -> Unit,
     onBack: () -> Unit,
     onSend: () -> Unit,
     onAttach: () -> Unit,
-    onOpenFile: (String) -> Unit
+    onOpenFile: (String) -> Unit,
+    onAcceptRequest: () -> Unit = {},
+    onDeclineRequest: () -> Unit = {}
 ) {
     val listState = rememberLazyListState()
     val listScope = rememberCoroutineScope()
@@ -120,13 +141,13 @@ fun ChatThreadScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 8.dp),
+                    .padding(horizontal = 4.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MeshWhite)
                 }
-                MeshAvatar(name = conversation.name, size = 40.dp)
+                MeshAvatar(name = conversation.name, size = 44.dp, online = conversation.online)
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(conversation.name, color = MeshWhite, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
@@ -136,6 +157,23 @@ fun ChatThreadScreen(
                         fontSize = 12.sp
                     )
                 }
+            }
+            AnimatedVisibility(
+                visible = pendingRequest,
+                enter = expandVertically(tween(240)) + fadeIn(tween(240)),
+                exit = shrinkVertically(tween(180)) + fadeOut(tween(140))
+            ) {
+                Text(
+                    text = "Message request",
+                    color = MeshAccent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(MeshAccent.copy(alpha = 0.14f))
+                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                )
             }
             if (!identityWarning.isNullOrBlank()) {
                 Text(
@@ -192,7 +230,33 @@ fun ChatThreadScreen(
                 }
             }
             }
-            if (fileProgress.isNotBlank() && fileProgress != "No file transfer") {
+            if (fileTransfer.visible) {
+                val transferText = when (fileTransfer.phase) {
+                    FileTransferPhase.PREPARING -> "Preparing ${fileTransfer.fileName.ifBlank { "file" }}…"
+                    FileTransferPhase.SENDING -> {
+                        val progress = if (fileTransfer.total > 0)
+                            "${fileTransfer.completed}/${fileTransfer.total}"
+                        else fileTransfer.sizeLabel
+                        "Sending ${fileTransfer.fileName} $progress".trim()
+                    }
+                    FileTransferPhase.WAITING_CONFIRMATION ->
+                        "${fileTransfer.fileName} reached nearby phones. Not confirmed delivered yet."
+                    FileTransferPhase.SUCCESS ->
+                        "Saved ${fileTransfer.fileName}. Tap the message to open it."
+                    FileTransferPhase.FAILED -> fileTransfer.error.ifBlank {
+                        "Couldn't send the file. It is still on your phone."
+                    }
+                    FileTransferPhase.NONE -> ""
+                }
+                Text(
+                    text = transferText,
+                    color = if (fileTransfer.phase == FileTransferPhase.FAILED) MeshDanger else MeshMuted,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .padding(horizontal = 20.dp, vertical = 4.dp)
+                        .semantics { contentDescription = transferText }
+                )
+            } else if (fileProgress.isNotBlank() && fileProgress != "No file transfer") {
                 Text(
                     text = fileProgress,
                     color = MeshMuted,
@@ -200,69 +264,167 @@ fun ChatThreadScreen(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                 )
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp, top = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .border(1.dp, MeshMuted.copy(alpha = 0.35f), CircleShape)
-                        .clickable(onClick = onAttach),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "Send file", tint = MeshWhite, modifier = Modifier.size(20.dp))
-                }
-                Row(
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp)
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(MeshComposer)
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BasicTextField(
-                        value = composerText,
-                        onValueChange = onComposerChange,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 24.dp, max = 96.dp)
-                            .semantics { contentDescription = "Message" },
-                        textStyle = TextStyle(color = MeshWhite, fontSize = 16.sp),
-                        cursorBrush = SolidColor(MeshWhite),
-                        maxLines = 5,
-                        decorationBox = { inner ->
-                            if (composerText.isEmpty()) {
-                                Text("Message...", color = MeshMuted, fontSize = 16.sp)
-                            }
-                            inner()
-                        }
+            // Swapping the composer for the accept bar is the whole point of
+            // the gate, so the exchange is animated rather than a hard cut.
+            AnimatedContent(
+                targetState = pendingRequest,
+                transitionSpec = {
+                    if (targetState) {
+                        (slideInVertically(tween(260)) { it / 2 } + fadeIn(tween(260)))
+                            .togetherWith(fadeOut(tween(140)))
+                    } else {
+                        (slideInVertically(tween(280)) { it / 3 } + fadeIn(tween(280)))
+                            .togetherWith(slideOutVertically(tween(180)) { it / 3 } + fadeOut(tween(180)))
+                    }
+                },
+                label = "composerOrRequestBar"
+            ) { gated ->
+                if (gated) {
+                    RequestActionBar(
+                        name = conversation.name,
+                        onAccept = onAcceptRequest,
+                        onDecline = onDeclineRequest
                     )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .then(
-                            if (composerText.isNotBlank()) Modifier.background(AccentGradient)
-                            else Modifier.background(MeshComposer)
-                        )
-                        .clickable(enabled = composerText.isNotBlank(), onClick = onSend),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.ArrowUpward,
-                        contentDescription = "Send",
-                        tint = if (composerText.isNotBlank()) MeshWhite else MeshMuted,
-                        modifier = Modifier.size(20.dp)
+                } else {
+                    MessageComposer(
+                        composerText = composerText,
+                        onComposerChange = onComposerChange,
+                        onSend = onSend,
+                        onAttach = onAttach
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Shown instead of the composer while a peer is still a request. Replying is
+ * consent, so the composer stays out of reach until the user accepts.
+ */
+@Composable
+private fun RequestActionBar(
+    name: String,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 14.dp, top = 6.dp)
+    ) {
+        Text(
+            text = requestPrompt(name),
+            color = MeshMuted,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(46.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(AccentGradient)
+                    .clickable(onClick = onAccept)
+                    .semantics { contentDescription = "Accept request from $name" },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Accept", color = MeshWhite, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(46.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MeshWhite.copy(alpha = 0.10f))
+                    .clickable(onClick = onDecline)
+                    .semantics { contentDescription = "Delete request from $name" },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Delete", color = MeshMuted, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageComposer(
+    composerText: String,
+    onComposerChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onAttach: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, bottom = 12.dp, top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .border(1.dp, MeshMuted.copy(alpha = 0.35f), CircleShape)
+                .clickable(onClick = onAttach),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "Send file", tint = MeshWhite, modifier = Modifier.size(20.dp))
+        }
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 10.dp)
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MeshComposer)
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicTextField(
+                value = composerText,
+                onValueChange = onComposerChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 24.dp, max = 96.dp)
+                    .semantics { contentDescription = "Message" },
+                textStyle = TextStyle(color = MeshWhite, fontSize = 16.sp),
+                cursorBrush = SolidColor(MeshWhite),
+                maxLines = 5,
+                decorationBox = { inner ->
+                    if (composerText.isEmpty()) {
+                        Text("Message...", color = MeshMuted, fontSize = 16.sp)
+                    }
+                    inner()
+                }
+            )
+        }
+        val sendEnabled = composerText.isNotBlank()
+        // The send button fades between idle and ready instead of snapping.
+        val sendAlpha by animateFloatAsState(
+            targetValue = if (sendEnabled) 1f else 0.55f,
+            animationSpec = tween(180),
+            label = "sendAlpha"
+        )
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .alpha(sendAlpha)
+                .clip(CircleShape)
+                .then(
+                    if (sendEnabled) Modifier.background(AccentGradient)
+                    else Modifier.background(MeshComposer)
+                )
+                .clickable(enabled = sendEnabled, onClick = onSend),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.ArrowUpward,
+                contentDescription = "Send",
+                tint = if (sendEnabled) MeshWhite else MeshMuted,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }

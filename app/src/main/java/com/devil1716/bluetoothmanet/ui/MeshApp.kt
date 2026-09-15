@@ -8,12 +8,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.devil1716.bluetoothmanet.PeerDevice
 import com.devil1716.bluetoothmanet.ui.screens.ChatThreadScreen
 import com.devil1716.bluetoothmanet.ui.screens.ChatsHomeScreen
+import com.devil1716.bluetoothmanet.ui.screens.MessageRequestsScreen
 import com.devil1716.bluetoothmanet.ui.screens.OnboardingScreen
 import com.devil1716.bluetoothmanet.ui.screens.ProfileScreen
 import com.devil1716.bluetoothmanet.ui.theme.MeshTheme
 
 data class MeshActions(
     val startMesh: () -> Unit = {},
+    val stopMesh: () -> Unit = {},
     val enableBluetooth: () -> Unit = {},
     val makeDiscoverable: () -> Unit = {},
     val discoverPeers: () -> Unit = {},
@@ -47,7 +49,8 @@ fun MeshApp(
                 onSkip = viewModel::completeOnboarding,
                 onGetStarted = {
                     viewModel.completeOnboarding()
-                    actions.startMesh()
+                    if (!state.permission.allGranted) actions.requestPermissions()
+                    else actions.startMesh()
                 }
             )
             return@MeshTheme
@@ -64,14 +67,31 @@ fun MeshApp(
                 identityWarning = state.identityConflicts.entries
                     .firstOrNull { it.key.equals(openId, true) }
                     ?.value,
+                fileTransfer = state.fileTransfer,
+                pendingRequest = conversation.pendingRequest,
                 onComposerChange = viewModel::setComposerText,
                 onBack = viewModel::closeThread,
                 onSend = {
                     val sent = actions.sendMessage(openId, state.composerText)
-                    if (sent) viewModel.clearComposer()
+                    if (sent) {
+                        // Replying is consent, so the peer stops being a request.
+                        viewModel.noteOutgoingTo(openId)
+                        viewModel.clearComposer()
+                    }
                 },
                 onAttach = { actions.pickFile(openId) },
-                onOpenFile = actions.openFile
+                onOpenFile = actions.openFile,
+                onAcceptRequest = { viewModel.acceptRequest(openId, thenOpenThread = false) },
+                onDeclineRequest = { viewModel.declineRequest(openId) }
+            )
+        } else if (state.requestsVisible) {
+            BackHandler { viewModel.closeRequests() }
+            MessageRequestsScreen(
+                requests = state.messageRequests,
+                onBack = viewModel::closeRequests,
+                onOpen = { viewModel.openThread(it.id) },
+                onAccept = { viewModel.acceptRequest(it.id) },
+                onDecline = { viewModel.declineRequest(it.id) }
             )
         } else {
             ChatsHomeScreen(
@@ -81,16 +101,26 @@ fun MeshApp(
                 onSearchChange = viewModel::setSearchQuery,
                 onTabChange = viewModel::setHomeTab,
                 onStartMesh = actions.startMesh,
+                onStopMesh = actions.stopMesh,
+                meshStarted = state.meshStarted,
+                nearbyPeople = state.nearbyPeople,
+                chatThreads = state.chatThreads,
+                messageRequests = state.messageRequests,
+                onOpenRequests = viewModel::openRequests,
                 nearbyEmpty = nearbyEmptyCopy(
                     meshStarted = state.meshStarted,
                     bluetoothOff = state.permission.bluetoothOff,
                     permissionsGranted = state.permission.allGranted
                 ),
                 onNearbyAction = {
-                    when {
-                        state.permission.bluetoothOff -> actions.enableBluetooth()
-                        !state.permission.allGranted -> actions.requestPermissions()
-                        else -> actions.startMesh()
+                    when (nearbyPrimaryAction(
+                        meshStarted = state.meshStarted,
+                        bluetoothOff = state.permission.bluetoothOff,
+                        permissionsGranted = state.permission.allGranted
+                    )) {
+                        NearbyPrimaryAction.ENABLE_BLUETOOTH -> actions.enableBluetooth()
+                        NearbyPrimaryAction.REQUEST_PERMISSION -> actions.requestPermissions()
+                        NearbyPrimaryAction.START_MESH, NearbyPrimaryAction.NONE -> actions.startMesh()
                     }
                 },
                 onConversationClick = { viewModel.openThread(it.id) },
@@ -100,6 +130,7 @@ fun MeshApp(
                         newChatNodeId = state.newChatNodeId,
                         meshStatus = state.meshStatus,
                         connectionsLabel = state.connectionsLabel,
+                        meshStarted = state.meshStarted,
                         logs = state.logs,
                         classicPeers = state.classicPeers,
                         updateStatus = state.updateStatus,
@@ -107,6 +138,7 @@ fun MeshApp(
                         onNodeIdChange = viewModel::setNodeId,
                         onNewChatChange = viewModel::setNewChatNodeId,
                         onStartMesh = actions.startMesh,
+                        onStopMesh = actions.stopMesh,
                         onOpenChat = viewModel::openThread,
                         onEnableBluetooth = actions.enableBluetooth,
                         onDiscoverable = actions.makeDiscoverable,

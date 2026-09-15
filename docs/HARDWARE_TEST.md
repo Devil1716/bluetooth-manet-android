@@ -36,6 +36,19 @@ Record: device model, Android version, whether battery saver / OEM “sleeping a
 - [ ] Revoke Bluetooth permission while running: mesh stops or shows Permission needed.
 - [ ] Notification **Stop nearby chat** stops the service; Nearby tab shows nearby chat off.
 
+## Crashes and recovery (source-fixed; confirm on device)
+
+- [ ] Android 14: start nearby chat — app stays up (foreground service type). Capture Logcat if it dies.
+- [ ] Deny Bluetooth, tap Nearby action — permission sheet, not a crash.
+- [ ] Bluetooth off + no permission — Allow Bluetooth first, not Enable Bluetooth (Android 12 SecurityException).
+- [ ] Toggle Start/Stop nearby chat several times.
+- [ ] Turn Bluetooth off during a chat — no crash; queued copy; turn it back on.
+- [ ] Pick a file over 2 MB — error, no freeze. Cancel the picker — no send.
+- [ ] Rotate while the file picker is open, then pick a file — it still goes to the open chat.
+- [ ] Open a received file that was deleted — toast, no crash.
+
+Collect if it still crashes: phone model, Android version, what you tapped, and `adb logcat -b crash -d`.
+
 ## Identity
 
 - [ ] First meeting stores a fingerprint. A second device advertising the same node ID with a different key shows the identity warning and does not replace the pin.

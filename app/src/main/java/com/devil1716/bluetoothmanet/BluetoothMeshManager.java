@@ -31,6 +31,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 public class BluetoothMeshManager {
     public interface Listener {
@@ -73,6 +74,7 @@ public class BluetoothMeshManager {
     private volatile long lastPendingFlushAt;
 
     private volatile boolean accepting;
+    private volatile boolean stopped;
     private volatile BluetoothServerSocket serverSocket;
     private volatile String myNodeId = "NODE";
 
@@ -136,7 +138,7 @@ public class BluetoothMeshManager {
         }
 
         accepting = true;
-        executor.execute(() -> {
+        runMeshTask(() -> {
             try {
                 try {
                     serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
@@ -162,7 +164,20 @@ public class BluetoothMeshManager {
         });
     }
 
+    public void pauseForBluetoothOff() {
+        accepting = false;
+        closeServerSocket();
+        for (BluetoothSocket socket : sockets.values()) {
+            closeSocket(socket);
+        }
+        sockets.clear();
+        connectingAddresses.clear();
+        publishConnections();
+        listener.onLog("Bluetooth turned off. Queued messages stay on this phone.");
+    }
+
     public void stop() {
+        stopped = true;
         accepting = false;
         closeServerSocket();
         for (BluetoothSocket socket : sockets.values()) {
@@ -175,12 +190,21 @@ public class BluetoothMeshManager {
         executor.shutdownNow();
     }
 
+    private void runMeshTask(Runnable task) {
+        if (stopped) return;
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException ignored) {
+            MeshDiagnostics.record("lifecycle", "executor_rejected");
+        }
+    }
+
     @SuppressLint("MissingPermission")
     public void connectToDevice(BluetoothDevice device) {
         if (device == null || !hasConnectPermission() || !connectingAddresses.add(device.getAddress())) {
             return;
         }
-        executor.execute(() -> {
+        runMeshTask(() -> {
             BluetoothSocket socket = null;
             try {
                 if (adapter.isDiscovering() && hasScanPermission()) {
@@ -265,7 +289,7 @@ public class BluetoothMeshManager {
     }
 
     private void startReaderLoop(BluetoothSocket socket) {
-        executor.execute(() -> {
+        runMeshTask(() -> {
             BluetoothDevice device = socket.getRemoteDevice();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
@@ -385,7 +409,7 @@ public class BluetoothMeshManager {
     }
 
     private void storePending(ManetMessage message) {
-        executor.execute(() -> {
+        runMeshTask(() -> {
             database.pendingMessageDao().insert(new PendingMessageEntity(message.getId(),
                     message.getDestination(), message.toWire(), System.currentTimeMillis()));
             listener.onLog("Stored " + message.getId() + " for offline destination " + message.getDestination());
@@ -405,14 +429,14 @@ public class BluetoothMeshManager {
         if (messageId == null || messageId.trim().isEmpty()) return;
         pendingAttempts.remove(messageId);
         pendingRetryAt.remove(messageId);
-        executor.execute(() -> database.pendingMessageDao().delete(messageId));
+        runMeshTask(() -> database.pendingMessageDao().delete(messageId));
     }
 
     private void flushPending() {
         long now = System.currentTimeMillis();
         if (now - lastPendingFlushAt < PENDING_FLUSH_MIN_INTERVAL_MS) return;
         lastPendingFlushAt = now;
-        executor.execute(() -> {
+        runMeshTask(() -> {
             long cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L;
             for (PendingMessageEntity expired : database.pendingMessageDao().all(0L)) {
                 if (expired.createdAt < cutoff) {
@@ -458,7 +482,7 @@ public class BluetoothMeshManager {
             listener.onLog("Destination is required to send a file.");
             return false;
         }
-        if (contents.length > 2 * 1024 * 1024) {
+        if (contents.length > MeshIo.MAX_FILE_BYTES) {
             listener.onLog("File is larger than 2 MB. Choose a smaller file.");
             return false;
         }
@@ -503,12 +527,12 @@ public class BluetoothMeshManager {
         }
         boolean sent = chunksDelivered > 0;
         listener.onLog(sent
-                ? "File " + safeName + " queued on the mesh with integrity checks."
+                ? "File " + safeName + " handed to nearby phones. Delivery is not confirmed yet."
                 : "File " + safeName + " could not be written to any peer.");
-        if (sent) {
-            listener.onMessageDelivered(new ManetMessage(id, myNodeId, trimmedDestination,
-                    ManetMessage.DEFAULT_TTL, "Sent file: " + safeName));
-        }
+        ManetMessage fileNote = new ManetMessage(id, myNodeId, trimmedDestination,
+                ManetMessage.DEFAULT_TTL, "File: " + safeName);
+        listener.onMessageStatusChanged(fileNote, MessageStatus.SENDING);
+        listener.onMessageStatusChanged(fileNote, sent ? MessageStatus.SENT : MessageStatus.FAILED);
         return sent;
     }
 
@@ -531,6 +555,13 @@ public class BluetoothMeshManager {
         if (separator >= 0) {
             node = data.substring(0, separator);
             publicKey = data.substring(separator + 2);
+        }
+        // Node IDs are case-insensitive identities; keep one canonical form so
+        // the same peer cannot occupy two slots in the roster.
+        node = node == null ? "" : node.trim().toUpperCase();
+        if (node.isEmpty()) {
+            listener.onLog("Ignored HELLO with no node ID from " + fromAddress);
+            return;
         }
         if (publicKey != null) {
             if (!message.hasSignature()
@@ -557,9 +588,18 @@ public class BluetoothMeshManager {
         }
         peerNodeIds.put(fromAddress, node);
         listener.onLog("Peer " + fromAddress + " is node " + node + (publicKey != null ? " (key verified)" : ""));
+        if (extraLinks != null) extraLinks.noteVerifiedNodeId(fromAddress, node);
         final String storedNode = node;
-        executor.execute(() -> database.meshStateDao().upsertNeighbor(new MeshNeighborEntity(
-                fromAddress, storedNode, 0, null, null, 1, System.currentTimeMillis(), true)));
+        // Update in place rather than replacing the row: only the scanner knows
+        // this peer's signal strength, and a blind insert would reset it to 0
+        // and break every distance estimate in the UI.
+        runMeshTask(() -> {
+            long seenAt = System.currentTimeMillis();
+            if (database.meshStateDao().touchNeighbor(fromAddress, storedNode, 1, seenAt, true) == 0) {
+                database.meshStateDao().upsertNeighbor(new MeshNeighborEntity(
+                        fromAddress, storedNode, 0, null, null, 1, seenAt, true));
+            }
+        });
         long now = System.currentTimeMillis();
         Long previous = helloSeen.put(node, now);
         if (previous != null && now - previous < 8_000L) return;
@@ -650,9 +690,13 @@ public class BluetoothMeshManager {
         forwardBytes(outgoing.meta.toBytes(), null);
         for (String item : packet.requestIndexes.split(",")) {
             if (item.trim().isEmpty()) continue;
-            int index = Integer.parseInt(item.trim());
-            if (index >= 0 && index < outgoing.chunks.size()) {
-                forwardBytes(outgoing.chunks.get(index).toBytes(), null);
+            try {
+                int index = Integer.parseInt(item.trim());
+                if (index >= 0 && index < outgoing.chunks.size()) {
+                    forwardBytes(outgoing.chunks.get(index).toBytes(), null);
+                }
+            } catch (NumberFormatException ignored) {
+                MeshDiagnostics.record("transfer", "bad_chunk_index");
             }
         }
     }
@@ -689,8 +733,9 @@ public class BluetoothMeshManager {
             listener.onFileReceived(buffer.fileName, saved.getAbsolutePath());
             listener.onMessageDelivered(new ManetMessage(packet.id, buffer.source, myNodeId,
                     packet.ttl, MeshFileStore.chatLabel(buffer.fileName, saved.getAbsolutePath())));
-        } catch (IOException e) {
-            listener.onLog("File save failed: " + e.getMessage());
+        } catch (IOException | OutOfMemoryError e) {
+            listener.onLog("Couldn't save the file. Storage may be full.");
+            MeshDiagnostics.record("transfer", "save_failed");
         }
     }
 
@@ -809,10 +854,20 @@ public class BluetoothMeshManager {
         listener.onConnectionsChanged(peers);
     }
 
+    /**
+     * Prefers the mesh node ID over the Bluetooth device name. Labels are
+     * parsed back into node IDs upstream, so a hardware name here would show
+     * up in the UI as the peer's identity.
+     */
     @SuppressLint("MissingPermission")
     private String safeDeviceLabel(BluetoothDevice device) {
+        String address = device.getAddress();
+        String node = peerNodeIds.get(address);
+        if (node != null && !node.trim().isEmpty()) {
+            return node.trim().toUpperCase() + " (" + address + ")";
+        }
         String name = hasConnectPermission() ? device.getName() : null;
-        return (name == null || name.trim().isEmpty() ? "Unknown" : name) + " (" + device.getAddress() + ")";
+        return (name == null || name.trim().isEmpty() ? "Unknown" : name) + " (" + address + ")";
     }
 
     private void closeServerSocket() {

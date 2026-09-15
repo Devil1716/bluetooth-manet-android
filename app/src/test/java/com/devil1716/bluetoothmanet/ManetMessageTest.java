@@ -50,6 +50,22 @@ public class ManetMessageTest {
     }
 
     @Test
+    public void malformedAndOversizedControlDoesNotParse() {
+        try {
+            ManetMessage.fromWire("not-a-packet");
+            org.junit.Assert.fail("expected parse failure");
+        } catch (IllegalArgumentException ignored) { }
+        try {
+            ManetMessage.fromWire("NOPE|id|A|B|1|hi");
+            org.junit.Assert.fail("expected type failure");
+        } catch (IllegalArgumentException ignored) { }
+        try {
+            ManetMessage.fromWire("MSG|id|A|B|ttl|hi");
+            org.junit.Assert.fail("expected ttl failure");
+        } catch (IllegalArgumentException ignored) { }
+    }
+
+    @Test
     public void signedWireRoundTripPreservesSignature() {
         ManetMessage signed = new ManetMessage(ManetMessage.Type.MSG, "abc", "A", "B", 7, "hello", "deadbeef");
         ManetMessage parsed = ManetMessage.fromWire(signed.toWire());

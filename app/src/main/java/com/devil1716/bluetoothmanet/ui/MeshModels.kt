@@ -24,7 +24,11 @@ data class ConversationPreview(
     val hopCount: Int = 1,
     val subtitle: String = "",
     val distanceLabel: String = "Nearby",
-    val hasMessages: Boolean = false
+    val hasMessages: Boolean = false,
+    /** True when this peer's radio was heard from recently. */
+    val nearby: Boolean = false,
+    /** True while this peer is waiting to be accepted into the inbox. */
+    val pendingRequest: Boolean = false
 )
 
 data class StoryPeer(
@@ -35,7 +39,9 @@ data class StoryPeer(
 
 enum class FileTransferPhase {
     NONE,
+    PREPARING,
     SENDING,
+    WAITING_CONFIRMATION,
     SUCCESS,
     FAILED
 }
@@ -75,10 +81,11 @@ data class MeshUiState(
     val openConversationId: String? = null,
     val settingsVisible: Boolean = false,
     val newChatVisible: Boolean = false,
+    val requestsVisible: Boolean = false,
     val showWelcome: Boolean = false,
     val onboardingComplete: Boolean = false,
     val onboarded: Boolean = false,
-    val homeTab: MeshHomeTab = MeshHomeTab.Nearby,
+    val homeTab: MeshHomeTab = MeshHomeTab.Chats,
     val meshStarted: Boolean = false,
     val meshStatus: String = "Offline",
     val statusChip: String = "Offline",
@@ -109,12 +116,39 @@ data class MeshUiState(
                 it.name.contains(query, true) || it.preview.contains(query, true) || it.id.contains(query, true)
             }
         }
+
+    /**
+     * Phones whose radio is in range right now. Empty while the mesh is off,
+     * because presence rows stay fresh for a while after the radio stops and
+     * would otherwise keep showing people who can no longer be reached.
+     */
+    val nearbyPeople: List<ConversationPreview>
+        get() = if (!meshStarted) emptyList() else conversations.filter { it.nearby }
+
+    /**
+     * Inbox threads: messages exist and the peer has been accepted. Requests
+     * are deliberately excluded so an unaccepted peer cannot reach the inbox.
+     */
+    val chatThreads: List<ConversationPreview>
+        get() = filteredConversations.filter { it.hasMessages && !it.pendingRequest }
+            .sortedByDescending { it.timestamp }
+
+    /** Peers waiting to be accepted, newest first. */
+    val messageRequests: List<ConversationPreview>
+        get() = conversations.filter { it.pendingRequest }
+            .sortedByDescending { it.timestamp }
+
+    val requestCount: Int get() = messageRequests.size
+
+    /** True when the open thread is still gated behind accepting the request. */
+    val openConversationIsRequest: Boolean
+        get() = openConversation?.pendingRequest == true
 }
 
 fun formatInboxTime(timestamp: Long, now: Long = System.currentTimeMillis()): String {
     if (timestamp <= 0L) return ""
     val diff = now - timestamp
-    if (diff < 60_000L) return "Just Now"
+    if (diff < 60_000L) return "Just now"
     val nowCal = Calendar.getInstance().apply { timeInMillis = now }
     val thenCal = Calendar.getInstance().apply { timeInMillis = timestamp }
     if (nowCal.get(Calendar.YEAR) == thenCal.get(Calendar.YEAR)

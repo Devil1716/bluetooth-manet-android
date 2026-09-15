@@ -43,6 +43,19 @@ val BubbleGradient = Brush.linearGradient(
 
 val HeaderGradient = AccentGradient
 
+/** Soft lavender wash behind the inbox hero, fading into navy like the chat mock. */
+val HeroGradient = Brush.verticalGradient(
+    colorStops = arrayOf(
+        0.00f to Color(0xFFC5C0F5),
+        0.18f to Color(0xFFA8A9FF),
+        0.42f to Color(0xFF8B8CFF),
+        0.68f to Color(0xFF3D4278),
+        1.00f to Color(0xFF070A14)
+    )
+)
+
+val HeroSearchFill = Color(0x66FFFFFF)
+
 private val MeshColorScheme = darkColorScheme(
     primary = MeshAccent,
     secondary = MeshLavender,

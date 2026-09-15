@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
+import com.devil1716.bluetoothmanet.AcceptedPeerEntity
 import com.devil1716.bluetoothmanet.AppDatabase
 import com.devil1716.bluetoothmanet.ChatMessageEntity
 import com.devil1716.bluetoothmanet.MeshFileStore
@@ -13,6 +14,7 @@ import com.devil1716.bluetoothmanet.update.UpdatePhase
 import com.devil1716.bluetoothmanet.update.UpdateUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -44,18 +46,50 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     private var messages: List<ChatMessageEntity> = emptyList()
     private var neighbors: List<MeshNeighborEntity> = emptyList()
     private var livePeerLabels: List<String> = emptyList()
+    private var acceptedPeers: Set<String> = emptySet()
+
+    /**
+     * Peers accepted in this session whose database write may still be in
+     * flight. Unioned into every reload so a refresh landing mid-write cannot
+     * bounce a peer back into requests.
+     */
+    private val optimisticAccepts = mutableSetOf<String>()
+    private var presenceTicker: Job? = null
 
     init {
         refresh()
+        startPresenceTicker()
     }
 
     fun refresh() {
         scope.launch {
-            val loadedMessages = withContext(Dispatchers.IO) { database.messageDao().getAll() }
-            val loadedNeighbors = withContext(Dispatchers.IO) { database.meshStateDao().neighbors() }
-            messages = loadedMessages
-            neighbors = loadedNeighbors
+            val loaded = withContext(Dispatchers.IO) {
+                Triple(
+                    database.messageDao().getAll(),
+                    database.meshStateDao().recentNeighbors(System.currentTimeMillis() - NEARBY_TTL_MS),
+                    database.conversationRequestDao().acceptedPeerIds()
+                        .mapTo(HashSet()) { normalizePeerId(it) }
+                )
+            }
+            messages = loaded.first
+            neighbors = loaded.second
+            acceptedPeers = loaded.third + optimisticAccepts
             publish()
+        }
+    }
+
+    /**
+     * Presence decays with wall-clock time, so the Nearby list has to be
+     * rebuilt on a timer. Without this a peer that walked away stays on screen
+     * until the next unrelated mesh broadcast happens to arrive.
+     */
+    private fun startPresenceTicker() {
+        if (presenceTicker?.isActive == true) return
+        presenceTicker = scope.launch {
+            while (true) {
+                delay(PRESENCE_TICK_MS)
+                refresh()
+            }
         }
     }
 
@@ -173,6 +207,86 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
 
     fun closeThread() = _uiState.update { it.copy(openConversationId = null, composerText = "") }
 
+    fun openRequests() = _uiState.update {
+        it.copy(requestsVisible = true, settingsVisible = false, newChatVisible = false)
+    }
+
+    fun closeRequests() = _uiState.update { it.copy(requestsVisible = false) }
+
+    /**
+     * Lets a peer into the inbox. The state flips immediately so the request
+     * row can animate away without waiting for the database round trip, and
+     * the thread is opened so the user can reply straight away.
+     */
+    fun acceptRequest(conversationId: String, thenOpenThread: Boolean = true) {
+        val id = normalizePeerId(conversationId)
+        if (id.isEmpty()) return
+        optimisticAccepts += id
+        acceptedPeers = acceptedPeers + id
+        persistAcceptance(id)
+        publish()
+        if (thenOpenThread) {
+            openThread(id)
+            _uiState.update { it.copy(requestsVisible = false) }
+        } else {
+            _uiState.update { state ->
+                // Leave the requests screen once the queue is empty.
+                if (state.requestCount == 0) state.copy(requestsVisible = false) else state
+            }
+        }
+    }
+
+    /**
+     * Declines a request by discarding the thread. No "declined" flag is kept,
+     * so if that peer messages again it simply raises a fresh request instead
+     * of being silently swallowed.
+     */
+    fun declineRequest(conversationId: String) {
+        val id = normalizePeerId(conversationId)
+        if (id.isEmpty()) return
+        optimisticAccepts -= id
+        acceptedPeers = acceptedPeers - id
+        messages = messages.filterNot { normalizePeerId(it.conversationId) == id }
+        prefs.edit().remove(draftKey(id)).apply()
+        _uiState.update { state ->
+            if (state.openConversationId.equals(id, true)) {
+                state.copy(openConversationId = null, composerText = "")
+            } else {
+                state
+            }
+        }
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                database.conversationRequestDao().forget(id)
+                database.messageDao().deleteConversation(id)
+            }
+            refresh()
+        }
+        publish()
+        _uiState.update { state ->
+            if (state.requestCount == 0) state.copy(requestsVisible = false) else state
+        }
+    }
+
+    /** Sending to someone is consent to hear back from them. */
+    fun noteOutgoingTo(conversationId: String) {
+        val id = normalizePeerId(conversationId)
+        if (id.isEmpty() || id in acceptedPeers) return
+        optimisticAccepts += id
+        acceptedPeers = acceptedPeers + id
+        persistAcceptance(id)
+        publish()
+    }
+
+    private fun persistAcceptance(peerId: String) {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                database.conversationRequestDao()
+                    .accept(AcceptedPeerEntity(peerId, System.currentTimeMillis()))
+            }
+        }
+    }
+
     fun clearComposer() {
         val id = _uiState.value.openConversationId
         if (!id.isNullOrBlank()) prefs.edit().remove(draftKey(id)).apply()
@@ -256,8 +370,29 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         if (peers != null || fileProgress != null || transferUpdate != null) refresh()
     }
 
+    /**
+     * The radio found or lost nearby phones. Seeing anyone at all proves the
+     * mesh is live, which lets the UI leave the "Connecting" state even before
+     * a GATT link finishes negotiating.
+     */
+    fun onNearbyRosterChanged(nearbyCount: Int) {
+        if (nearbyCount > 0) {
+            _uiState.update { state ->
+                if (state.meshStarted) state else state.copy(
+                    meshStarted = true,
+                    onboardingComplete = true
+                )
+            }
+        }
+        refresh()
+    }
+
     fun appendLog(message: String) {
-        _uiState.update { it.copy(logs = it.logs + message + "\n") }
+        val line = message.take(120)
+        _uiState.update {
+            val next = it.logs + line + "\n"
+            it.copy(logs = if (next.length > 8_000) next.takeLast(6_000) else next)
+        }
     }
 
     override fun onCleared() {
@@ -266,12 +401,22 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun publish() {
-        val onlineNodes = onlineNodeIds()
-        val grouped = messages.groupBy { it.conversationId }
-        val fromMessages = grouped.map { (id, items) ->
-            val last = items.maxByOrNull { it.timestamp } ?: return@map null
-            val online = isOnline(id, onlineNodes)
+        val now = System.currentTimeMillis()
+        val onlineNodes = onlineNodeIds(now)
+        // Group case-insensitively: outbound rows are uppercased but inbound
+        // node IDs arrive verbatim off the wire, and grouping on the raw value
+        // splits one peer into two threads.
+        val grouped = messages.groupBy { it.conversationId.trim().uppercase() }
+        val fromMessages = grouped.mapNotNull { (id, items) ->
+            val last = items.maxByOrNull { it.timestamp } ?: return@mapNotNull null
             val neighbor = neighborFor(id)
+            val online = isOnline(id, onlineNodes, now)
+            val nearby = isNearby(neighbor, now)
+            val gate = conversationGate(
+                accepted = id in acceptedPeers,
+                hasOutgoing = items.any { it.sentByMe },
+                hasIncoming = items.any { !it.sentByMe }
+            )
             ConversationPreview(
                 id = id,
                 name = displayNameFor(id),
@@ -283,35 +428,40 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
                 hopCount = neighbor?.hopCount ?: 1,
                 subtitle = nearbySubtitle(online, neighbor?.hopCount ?: 1),
                 distanceLabel = formatDistanceLabel(neighbor?.rssi ?: 0, neighbor?.hopCount ?: 1),
-                hasMessages = true
+                hasMessages = true,
+                nearby = nearby,
+                pendingRequest = gate == ConversationGate.PENDING_REQUEST
             )
-        }.filterNotNull()
+        }
         val seen = fromMessages.map { it.id.uppercase() }.toHashSet()
         val fromNeighbors = neighbors.mapNotNull { neighbor ->
-            val node = neighbor.displayName?.trim().orEmpty()
-            if (node.isEmpty() || !seen.add(node.uppercase())) null
-            else {
-                val online = neighbor.connected || isOnline(node, onlineNodes)
-                ConversationPreview(
-                    id = node,
-                    name = displayNameFor(node),
-                    preview = "Tap to start a conversation",
-                    timestamp = if (neighbor.lastSeen > 0L) neighbor.lastSeen else 0L,
-                    online = online,
-                    hasAttachment = false,
-                    rssi = neighbor.rssi,
-                    hopCount = neighbor.hopCount,
-                    subtitle = nearbySubtitle(online, neighbor.hopCount),
-                    distanceLabel = formatDistanceLabel(neighbor.rssi, neighbor.hopCount)
-                )
-            }
+            val node = neighbor.displayName?.trim()?.uppercase().orEmpty()
+            if (node.isEmpty() || !seen.add(node)) return@mapNotNull null
+            val online = isOnline(node, onlineNodes, now)
+            ConversationPreview(
+                id = node,
+                name = displayNameFor(node),
+                preview = "Tap to start a conversation",
+                timestamp = if (neighbor.lastSeen > 0L) neighbor.lastSeen else 0L,
+                online = online,
+                hasAttachment = false,
+                rssi = neighbor.rssi,
+                hopCount = neighbor.hopCount,
+                subtitle = nearbySubtitle(online, neighbor.hopCount),
+                distanceLabel = formatDistanceLabel(neighbor.rssi, neighbor.hopCount),
+                nearby = isNearby(neighbor, now)
+            )
         }
         val conversations = (fromMessages + fromNeighbors)
-            .sortedWith(compareByDescending<ConversationPreview> { it.online }.thenByDescending { it.timestamp })
+            .sortedWith(
+                compareByDescending<ConversationPreview> { it.online }
+                    .thenByDescending { it.nearby }
+                    .thenByDescending { it.timestamp }
+            )
         if (conversations.isNotEmpty() && !prefs.getBoolean("onboarding_complete", false)) {
             prefs.edit().putBoolean("onboarding_complete", true).apply()
         }
-        val stories = buildStories(conversations, onlineNodes)
+        val stories = buildStories(conversations, onlineNodes, now)
         val openId = _uiState.value.openConversationId
         val thread = if (openId == null) emptyList()
         else messages.filter { it.conversationId.equals(openId, true) }.sortedBy { it.timestamp }
@@ -325,18 +475,26 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /** A neighbour counts as nearby only while its last sighting is fresh. */
+    private fun isNearby(neighbor: MeshNeighborEntity?, now: Long): Boolean {
+        if (neighbor == null) return false
+        if (neighbor.lastSeen <= 0L) return false
+        return now - neighbor.lastSeen <= NEARBY_TTL_MS
+    }
+
     private fun buildStories(
         conversations: List<ConversationPreview>,
-        onlineNodes: Set<String>
+        onlineNodes: Set<String>,
+        now: Long
     ): List<StoryPeer> {
         val stories = LinkedHashMap<String, StoryPeer>()
         neighbors.sortedByDescending { it.connected }.forEach { neighbor ->
-            val node = neighbor.displayName?.trim().orEmpty()
+            val node = neighbor.displayName?.trim()?.uppercase().orEmpty()
             if (node.isNotEmpty()) {
-                stories[node.uppercase()] = StoryPeer(
+                stories[node] = StoryPeer(
                     id = node,
                     name = firstName(displayNameFor(node)),
-                    online = neighbor.connected || isOnline(node, onlineNodes)
+                    online = isOnline(node, onlineNodes, now)
                 )
             }
         }
@@ -367,16 +525,19 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         return label.ifEmpty { id }
     }
 
-    private fun onlineNodeIds(): Set<String> {
+    /**
+     * Node IDs reachable right now. A stored `connected` flag is not enough on
+     * its own: the row survives the peer walking away, so freshness decides.
+     */
+    private fun onlineNodeIds(now: Long): Set<String> {
         val ids = HashSet<String>()
-        neighbors.filter { it.connected }.forEach { neighbor ->
+        neighbors.filter { it.connected && now - it.lastSeen <= NEARBY_TTL_MS }.forEach { neighbor ->
             neighbor.displayName?.trim()?.uppercase()?.let { if (it.isNotEmpty()) ids.add(it) }
             ids.add(neighbor.deviceId.uppercase())
         }
-        livePeerLabels.forEach { label ->
-            val node = label.substringBefore(" (").trim()
-            if (node.isNotEmpty()) ids.add(node.uppercase())
-        }
+        // Live transport labels are authoritative but carry placeholders for
+        // peers whose handshake has not finished; parsePeerNodeIds drops those.
+        ids.addAll(parsePeerNodeIds(livePeerLabels))
         return ids
     }
 
@@ -393,14 +554,20 @@ class MeshHomeViewModel(application: Application) : AndroidViewModel(application
         return generated
     }
 
-    private fun isOnline(id: String, onlineNodes: Set<String>): Boolean {
+    private fun isOnline(id: String, onlineNodes: Set<String>, now: Long): Boolean {
         val key = id.trim().uppercase()
+        if (key.isEmpty()) return false
         if (key in onlineNodes) return true
         return neighbors.any { neighbor ->
-            neighbor.connected && (
-                neighbor.displayName.equals(id, true) ||
-                    neighbor.deviceId.equals(id, true)
-                )
+            neighbor.connected &&
+                now - neighbor.lastSeen <= NEARBY_TTL_MS &&
+                (neighbor.displayName.equals(id, true) || neighbor.deviceId.equals(id, true))
         }
+    }
+
+    private companion object {
+        /** Presence window; must stay above the radio's advertise interval. */
+        const val NEARBY_TTL_MS = 60_000L
+        const val PRESENCE_TICK_MS = 5_000L
     }
 }

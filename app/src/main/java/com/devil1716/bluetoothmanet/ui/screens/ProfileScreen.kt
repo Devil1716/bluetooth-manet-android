@@ -49,6 +49,7 @@ fun ProfileScreen(
     newChatNodeId: String,
     meshStatus: String,
     connectionsLabel: String,
+    meshStarted: Boolean = false,
     logs: String,
     classicPeers: List<PeerDevice>,
     updateStatus: String,
@@ -56,6 +57,7 @@ fun ProfileScreen(
     onNodeIdChange: (String) -> Unit,
     onNewChatChange: (String) -> Unit,
     onStartMesh: () -> Unit,
+    onStopMesh: () -> Unit = {},
     onOpenChat: (String) -> Unit,
     onEnableBluetooth: () -> Unit,
     onDiscoverable: () -> Unit,
@@ -93,9 +95,9 @@ fun ProfileScreen(
         Text(meshStatus, color = MeshAccent, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
         Spacer(Modifier.height(24.dp))
         MeshPrimaryButton(
-            text = "Start Mesh",
+            text = if (meshStarted) "Stop nearby chat" else "Start Mesh",
             modifier = Modifier.fillMaxWidth(),
-            onClick = onStartMesh
+            onClick = { if (meshStarted) onStopMesh() else onStartMesh() }
         )
         Spacer(Modifier.height(20.dp))
         ProfileCard {

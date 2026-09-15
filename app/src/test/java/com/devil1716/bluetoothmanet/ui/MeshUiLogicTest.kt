@@ -47,6 +47,31 @@ class MeshUiLogicTest {
     }
 
     @Test
+    fun radioPlaceholdersAreNeverMistakenForNodeIds() {
+        // A transport labels a peer "BLE peer (mac)" until the handshake names
+        // it. Surfacing that would show "BLE peer" as if it were a person.
+        assertEquals(
+            listOf("B4Q1"),
+            parsePeerNodeIds(
+                listOf(
+                    "BLE peer (AA:BB:CC:DD:EE:01)",
+                    "Unknown (AA:BB:CC:DD:EE:02)",
+                    "NODE (AA:BB:CC:DD:EE:03)",
+                    "B4Q1 (AA:BB:CC:DD:EE:04)"
+                )
+            )
+        )
+    }
+
+    @Test
+    fun peerNodeIdsAreCaseFoldedSoOnePeerCountsOnce() {
+        assertEquals(
+            listOf("B4Q1"),
+            parsePeerNodeIds(listOf("b4q1 (AA:BB:CC:DD:EE:01)", "B4Q1 (AA:BB:CC:DD:EE:01)"))
+        )
+    }
+
+    @Test
     fun byteSizeFormatting() {
         assertEquals("512 B", formatByteSize(512))
         assertEquals("1.5 KB", formatByteSize(1536))
@@ -62,7 +87,9 @@ class MeshUiLogicTest {
         assertTrue(sending.visible)
 
         val done = fileTransferFromProgress("notes.pdf", 10, 10)
-        assertEquals(FileTransferPhase.SUCCESS, done.phase)
+        assertEquals(FileTransferPhase.WAITING_CONFIRMATION, done.phase)
+        val received = fileTransferFromProgress("notes.pdf", 10, 10, receivedPath = "/tmp/notes.pdf")
+        assertEquals(FileTransferPhase.SUCCESS, received.phase)
 
         val failed = fileTransferFromLog("File send failed. Start mesh, wait for a signed link, then try again.", sending)
         assertEquals(FileTransferPhase.FAILED, failed.phase)
@@ -92,6 +119,8 @@ class MeshUiLogicTest {
 
     @Test
     fun nearbyEmptyStateExplainsBluetoothPermissionAndSearch() {
+        assertEquals(NearbyPrimaryAction.REQUEST_PERMISSION, nearbyPrimaryAction(true, true, false))
+        assertEquals("Permission needed", nearbyEmptyCopy(true, true, false).title)
         assertEquals("Bluetooth is off", nearbyEmptyCopy(true, true, true).title)
         assertEquals("Permission needed", nearbyEmptyCopy(true, false, false).title)
         assertEquals("Nearby chat is off", nearbyEmptyCopy(false, false, true).title)

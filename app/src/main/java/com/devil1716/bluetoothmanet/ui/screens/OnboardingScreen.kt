@@ -61,7 +61,7 @@ fun OnboardingScreen(
             MeshWordmark(fontSize = 32.sp, letterSpacing = 12.dp)
             Spacer(Modifier.height(36.dp))
             Text(
-                text = "People Nearby.\nReal Conversations.",
+                text = "Let's Stay Connected",
                 color = MeshWhite,
                 fontSize = 28.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -70,7 +70,7 @@ fun OnboardingScreen(
             )
             Spacer(Modifier.height(14.dp))
             Text(
-                text = "Discover and chat with people around you\nusing local device connection.",
+                text = "Chat with phones around you over Bluetooth — no internet, no account. MESH will ask for Bluetooth (and Location on older Android, only so it can scan).",
                 color = MeshMuted,
                 fontSize = 15.sp,
                 textAlign = TextAlign.Center,

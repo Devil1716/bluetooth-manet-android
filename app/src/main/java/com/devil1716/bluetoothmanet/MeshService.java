@@ -6,6 +6,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.pm.ServiceInfo;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
@@ -15,17 +16,21 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.IBinder;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 
+import com.devil1716.bluetoothmanet.bluetooth.MeshPeer;
 import com.devil1716.bluetoothmanet.bluetooth.gatt.BleGattTransport;
 import com.devil1716.bluetoothmanet.ui.ComposeMeshActivity;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -36,8 +41,12 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     public static final String ACTION_MESSAGE_EVENT = "com.devil1716.bluetoothmanet.MESSAGE_EVENT";
     public static final String ACTION_MESH_STATUS = "com.devil1716.bluetoothmanet.MESH_STATUS";
     public static final String ACTION_STOP = "com.devil1716.bluetoothmanet.STOP_MESH";
+    /** How long a neighbour row is kept before it is pruned entirely. */
+    private static final long NEIGHBOR_RETENTION_MS = 24 * 60 * 60 * 1000L;
+    private static final String PREFS = "mesh";
+    private static final String KEY_NODE_ID = "node_id";
     private static volatile BluetoothMeshManager activeManager;
-    private final Handler handler = new Handler();
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private BluetoothMeshManager manager;
     private BleGattTransport bleTransport;
     private AppDatabase database;
@@ -52,6 +61,21 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private int pendingSendAttempts;
     private final Runnable pendingSendRetry = new Runnable() {
         @Override public void run() { processPendingFileSend(false); }
+    };
+    private final BroadcastReceiver bluetoothStateReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (!BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) return;
+            int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+            if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+                MeshDiagnostics.record("conn", "bluetooth_off");
+                status("Bluetooth turned off. Queued messages stay on this phone.");
+                if (bleTransport != null) bleTransport.pause();
+                if (manager != null) manager.pauseForBluetoothOff();
+            } else if (state == BluetoothAdapter.STATE_ON) {
+                MeshDiagnostics.record("conn", "bluetooth_on");
+                ensureTransportReady();
+            }
+        }
     };
     private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -74,10 +98,21 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     @Override public void onCreate() {
         super.onCreate();
         createChannel();
+        // Load the saved ID before any radio work. onStartCommand delivers it
+        // too, but the transport starts advertising here, and advertising the
+        // placeholder "NODE" makes two fresh phones mistake each other for self.
+        String saved = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_NODE_ID, null);
+        if (saved != null && !saved.trim().isEmpty()) {
+            nodeId = saved.trim().toUpperCase(Locale.US);
+        }
         try {
-            startForeground(42, notification(0));
+            startForegroundCompat(notification(0));
             foregroundReady = true;
-        } catch (SecurityException securityException) {
+        } catch (IllegalStateException | SecurityException startFailure) {
+            MeshDiagnostics.record("lifecycle", "foreground_start_failed", startFailure.getClass().getSimpleName());
+            try {
+                startForegroundCompat(notification(0));
+            } catch (RuntimeException ignored) { }
             foregroundReady = false;
             stopSelf();
             return;
@@ -85,11 +120,13 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         manager = new BluetoothMeshManager(this, this);
         bleTransport = new BleGattTransport(this, new BleGattTransport.Listener() {
             @Override public void onLog(String message) { status(message); }
-            @Override public void onPeersChanged(List<String> labels) {
+            @Override public void onPeersChanged(List<MeshPeer> peers) {
+                persistNearbyPeers(peers);
                 if (manager != null) {
                     manager.notifyLinksChanged();
                     manager.broadcastHello();
                 }
+                broadcastNearbyChanged(peers);
             }
             @Override public void onPayloadReceived(String peerId, byte[] payload) {
                 if (manager == null) return;
@@ -106,11 +143,16 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             @Override public List<String> peerLabels() {
                 return bleTransport == null ? new ArrayList<String>() : bleTransport.peerLabels();
             }
+            @Override public void noteVerifiedNodeId(String peerId, String peerNodeId) {
+                if (bleTransport != null) bleTransport.noteVerifiedNodeId(peerId, peerNodeId);
+            }
         });
         activeManager = manager;
         database = AppDatabase.getInstance(this);
         ContextCompat.registerReceiver(this, bondReceiver,
                 new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, bluetoothStateReceiver,
+                new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED);
         receiverRegistered = true;
         manager.setMyNodeId(nodeId);
         ensureTransportReady();
@@ -137,9 +179,18 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (intent != null && intent.hasExtra("connect_address") && manager != null
                 && manager.getAdapter() != null) {
             String address = intent.getStringExtra("connect_address");
-            rfcommTargets.add(address);
-            manager.connectToDevice(manager.getAdapter().getRemoteDevice(address));
-            if (bleTransport != null) bleTransport.connect(address);
+            if (address == null || address.trim().isEmpty()) {
+                MeshDiagnostics.record("conn", "connect_ignored", "missing_address");
+            } else {
+                try {
+                    rfcommTargets.add(address);
+                    manager.connectToDevice(manager.getAdapter().getRemoteDevice(address));
+                    if (bleTransport != null) bleTransport.connect(address);
+                } catch (IllegalArgumentException invalidAddress) {
+                    MeshDiagnostics.record("conn", "connect_ignored", "bad_address");
+                    status("That device address is not valid.");
+                }
+            }
         }
         if (intent != null && intent.hasExtra("send_file_cache")) {
             queuePendingFileSend(
@@ -175,7 +226,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     public static boolean sendFile(android.content.Context context, String destination, String fileName, byte[] contents) {
         if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
                 Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return false;
-        if (contents == null || contents.length == 0) return false;
+        if (contents == null || contents.length == 0 || contents.length > MeshIo.MAX_FILE_BYTES) return false;
         BluetoothMeshManager current = activeManager;
         if (current != null && current.sendFile(destination, fileName, contents)) {
             return true;
@@ -206,13 +257,18 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private void processPendingFileSend(boolean fromPeerEvent) {
         if (manager == null || pendingSendCache == null || !pendingSendCache.exists()) return;
         try {
-            byte[] bytes = java.nio.file.Files.readAllBytes(pendingSendCache.toPath());
+            byte[] bytes = MeshIo.readBounded(pendingSendCache, MeshIo.MAX_FILE_BYTES);
             if (manager.sendFile(pendingSendDestination, pendingSendName, bytes)) {
                 clearPendingFileSend(true);
                 return;
             }
+        } catch (MeshIo.FileTooLargeException tooLarge) {
+            status("This file is larger than 2 MB. Choose a smaller one. The original is still on your phone.");
+            clearPendingFileSend(false);
+            return;
         } catch (java.io.IOException e) {
-            status("Could not read queued file: " + e.getMessage());
+            status("Couldn't read the queued file. Pick it again.");
+            MeshDiagnostics.record("transfer", "queue_read_failed");
             clearPendingFileSend(false);
             return;
         }
@@ -241,6 +297,84 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (sent) {
             status("Signed file transfer started.");
         }
+    }
+
+    /**
+     * Mirrors the radio's view of who is nearby into the database, which is
+     * what the Nearby list reads. Peers that are merely advertising are stored
+     * too, so a phone shows up as soon as it is in range instead of only after
+     * a GATT link and handshake have completed.
+     */
+    private void persistNearbyPeers(List<MeshPeer> peers) {
+        if (database == null || dbExecutor.isShutdown()) return;
+        final List<MeshPeer> snapshot = peers == null
+                ? new ArrayList<MeshPeer>() : new ArrayList<>(peers);
+        try {
+            dbExecutor.execute(() -> storeNearbyPeers(snapshot));
+        } catch (java.util.concurrent.RejectedExecutionException ignored) { }
+    }
+
+    private void storeNearbyPeers(List<MeshPeer> snapshot) {
+        try {
+            long now = System.currentTimeMillis();
+            Set<String> live = new HashSet<>();
+            for (MeshPeer peer : snapshot) {
+                // Without a node ID there is no address to send messages to, so
+                // listing the peer would offer a chat that could never be
+                // delivered. It still counts toward the nearby tally.
+                if (!peer.getHasNodeId()) continue;
+                live.add(peer.getAddress());
+                database.meshStateDao().upsertNeighbor(new MeshNeighborEntity(
+                        peer.getAddress(), peer.getNodeId(), peer.getRssi(), null, null, 1,
+                        peer.getLastSeenAt() > 0L ? peer.getLastSeenAt() : now,
+                        peer.getLinked()));
+            }
+            // Anyone missing from this roster is out of range: clear the flag so
+            // the UI stops reporting stale peers as online.
+            for (MeshNeighborEntity known : database.meshStateDao().neighbors()) {
+                if (!live.contains(known.deviceId) && known.connected) {
+                    database.meshStateDao().touchNeighbor(known.deviceId, known.displayName,
+                            known.hopCount, known.lastSeen, false);
+                }
+            }
+            database.meshStateDao().deleteExpiredNeighbors(now - NEIGHBOR_RETENTION_MS);
+        } catch (RuntimeException storeFailure) {
+            MeshDiagnostics.record("conn", "neighbor_store_failed");
+        }
+    }
+
+    /** Nothing is reachable once the radio work stops. */
+    private void markEveryoneOffline() {
+        if (database == null || dbExecutor.isShutdown()) return;
+        try {
+            dbExecutor.execute(() -> {
+                try {
+                    database.meshStateDao().markAllNeighborsOffline();
+                } catch (RuntimeException ignored) { }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException ignored) { }
+    }
+
+    /**
+     * Signals that the nearby roster moved. The roster itself is read back from
+     * the database rather than packed into the intent, so there is exactly one
+     * source of truth. The "peers" extra is deliberately not set here: it means
+     * "connected peers" everywhere else and is published by
+     * {@link #onConnectionsChanged(List)}.
+     */
+    private void broadcastNearbyChanged(List<MeshPeer> peers) {
+        int linked = 0;
+        int total = 0;
+        if (peers != null) {
+            total = peers.size();
+            for (MeshPeer peer : peers) {
+                if (peer.getLinked()) linked++;
+            }
+        }
+        sendBroadcast(new Intent(ACTION_MESH_STATUS).setPackage(getPackageName())
+                .putExtra("nearby_changed", true)
+                .putExtra("nearby_count", total)
+                .putExtra("linked_count", linked));
     }
 
     private void ensureTransportReady() {
@@ -281,11 +415,16 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     @Override public void onDestroy() {
         activeManager = null;
+        markEveryoneOffline();
         handler.removeCallbacksAndMessages(null);
-        if (receiverRegistered) unregisterReceiver(bondReceiver);
+        if (receiverRegistered) {
+            unregisterReceiver(bondReceiver);
+            unregisterReceiver(bluetoothStateReceiver);
+        }
         if (bleTransport != null) bleTransport.stop();
         if (manager != null) manager.stop();
         dbExecutor.shutdown();
+        MeshDiagnostics.record("lifecycle", "service_destroy");
         super.onDestroy();
     }
 
@@ -296,8 +435,8 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     @Override public void onConnectionsChanged(List<String> peers) {
         int count = peers == null ? 0 : peers.size();
         try {
-            startForeground(42, notification(count));
-        } catch (SecurityException ignored) { }
+            startForegroundCompat(notification(count));
+        } catch (IllegalStateException | SecurityException ignored) { }
         Intent intent = new Intent(ACTION_MESH_STATUS).setPackage(getPackageName())
                 .putExtra("message", count == 0 ? "No connected peers." : "Connected peers: " + String.join(", ", peers))
                 .putExtra("peer_count", count)
@@ -308,22 +447,32 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     @Override public void onMessageDelivered(ManetMessage message) {
         boolean sentByMe = message.getSource().equalsIgnoreCase(nodeId);
-        String conversation = sentByMe ? message.getDestination() : message.getSource();
+        String conversation = conversationKey(sentByMe ? message.getDestination() : message.getSource());
         dbExecutor.execute(() -> database.messageDao().insert(new ChatMessageEntity(message.getId(), conversation, message.getData(),
                 message.getSource(), System.currentTimeMillis(), MessageStatus.DELIVERED, sentByMe)));
         broadcastMessageEvent(message, MessageStatus.DELIVERED);
     }
 
     @Override public void onMessageStatusChanged(ManetMessage message, MessageStatus status) {
+        String conversation = conversationKey(message.getDestination());
         dbExecutor.execute(() -> {
             if (status == MessageStatus.SENDING || status == MessageStatus.QUEUED) {
-                database.messageDao().insert(new ChatMessageEntity(message.getId(), message.getDestination(), message.getData(),
+                database.messageDao().insert(new ChatMessageEntity(message.getId(), conversation, message.getData(),
                         message.getSource(), System.currentTimeMillis(), status, true));
             } else {
                 database.messageDao().updateStatus(message.getId(), status);
             }
         });
         broadcastMessageEvent(message, status);
+    }
+
+    /**
+     * Conversation IDs must be case-stable. Node IDs arrive uppercased when we
+     * send but verbatim off the wire, so without this the same peer produces
+     * two separate threads in the inbox.
+     */
+    private static String conversationKey(String nodeId) {
+        return nodeId == null ? "" : nodeId.trim().toUpperCase(Locale.US);
     }
 
     @Override public void onMessageAcknowledged(String messageId) {
@@ -358,8 +507,16 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private void broadcastMessageEvent(ManetMessage message, MessageStatus status) {
         sendBroadcast(new Intent(ACTION_MESSAGE_EVENT).setPackage(getPackageName())
                 .putExtra("message_id", message.getId()).putExtra("source", message.getSource())
-                .putExtra("destination", message.getDestination()).putExtra("body", message.getData())
+                .putExtra("destination", message.getDestination())
                 .putExtra("status", status.name()));
+    }
+
+    private void startForegroundCompat(Notification notification) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(42, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        } else {
+            startForeground(42, notification);
+        }
     }
 
     private void status(String message) {

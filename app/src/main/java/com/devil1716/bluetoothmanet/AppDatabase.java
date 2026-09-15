@@ -14,13 +14,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase;
         PendingMessageEntity.class,
         MeshNeighborEntity.class,
         MeshRouteEntity.class,
-        PacketHistoryEntity.class
-}, version = 3, exportSchema = false)
+        PacketHistoryEntity.class,
+        AcceptedPeerEntity.class
+}, version = 4, exportSchema = false)
 @TypeConverters(MessageStatusConverter.class)
 public abstract class AppDatabase extends RoomDatabase {
     public abstract MessageDao messageDao();
     public abstract PendingMessageDao pendingMessageDao();
     public abstract MeshStateDao meshStateDao();
+    public abstract ConversationRequestDao conversationRequestDao();
 
     private static volatile AppDatabase instance;
 
@@ -30,7 +32,7 @@ public abstract class AppDatabase extends RoomDatabase {
                 if (instance == null) {
                     instance = Room.databaseBuilder(context.getApplicationContext(),
                             AppDatabase.class, "manet_messages.db")
-                            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                             .build();
                 }
             }
@@ -52,6 +54,18 @@ public abstract class AppDatabase extends RoomDatabase {
             database.execSQL("CREATE INDEX IF NOT EXISTS index_mesh_routes_lastUpdated ON mesh_routes(lastUpdated)");
             database.execSQL("CREATE TABLE IF NOT EXISTS packet_history (packetId TEXT NOT NULL, packetType TEXT NOT NULL, seenAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL, PRIMARY KEY(packetId))");
             database.execSQL("CREATE INDEX IF NOT EXISTS index_packet_history_expiresAt ON packet_history(expiresAt)");
+        }
+    };
+
+    private static final Migration MIGRATION_3_4 = new Migration(3, 4) {
+        @Override public void migrate(SupportSQLiteDatabase database) {
+            database.execSQL("CREATE TABLE IF NOT EXISTS accepted_peers (peerId TEXT NOT NULL, acceptedAt INTEGER NOT NULL, PRIMARY KEY(peerId))");
+            // Grandfather in every existing thread. Message requests gate who
+            // can reach the user from now on; conversations the user already
+            // has must not be retroactively demoted into requests.
+            database.execSQL("INSERT OR IGNORE INTO accepted_peers (peerId, acceptedAt)"
+                    + " SELECT DISTINCT UPPER(TRIM(conversationId)), 0 FROM messages"
+                    + " WHERE TRIM(conversationId) <> ''");
         }
     };
 }

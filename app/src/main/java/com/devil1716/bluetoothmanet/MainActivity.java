@@ -75,21 +75,20 @@ public class MainActivity extends AppCompatActivity {
                 if (uri == null) return;
                 databaseExecutor.execute(() -> {
                     try (InputStream input = getContentResolver().openInputStream(uri)) {
-                        if (input == null) throw new IllegalStateException("Could not open file");
-                        ByteArrayOutputStream output = new ByteArrayOutputStream();
-                        byte[] buffer = new byte[8192];
-                        int read;
-                        while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+                        if (input == null) throw new java.io.IOException("missing");
+                        byte[] bytes = MeshIo.readBounded(input, MeshIo.MAX_FILE_BYTES);
                         String name = queryDisplayName(uri);
                         syncNodeId();
                         boolean sent = MeshService.sendFile(MainActivity.this,
-                                destinationInput.getText().toString(), name, output.toByteArray());
+                                destinationInput.getText().toString(), name, bytes);
                         String result = sent
                                 ? "Signed file transfer queued: " + name
                                 : "File transfer failed. Start mesh and check the event log.";
                         runOnUiThread(() -> fileProgressView.setText(result));
+                    } catch (MeshIo.FileTooLargeException tooLarge) {
+                        runOnUiThread(() -> fileProgressView.setText("This file is larger than 2 MB."));
                     } catch (Exception e) {
-                        runOnUiThread(() -> fileProgressView.setText("File error: " + e.getMessage()));
+                        runOnUiThread(() -> fileProgressView.setText("Couldn't open the file. Pick it again."));
                     }
                 });
             });

@@ -8,7 +8,7 @@ class MeshUiTimeTest {
     @Test
     fun recentTimestampIsJustNow() {
         val now = 1_720_000_000_000L
-        assertEquals("Just Now", formatInboxTime(now - 15_000L, now))
+        assertEquals("Just now", formatInboxTime(now - 15_000L, now))
     }
 
     @Test

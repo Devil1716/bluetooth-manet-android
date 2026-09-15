@@ -27,9 +27,20 @@ fun resolveInitialNodeId(stored: String?): String? {
     return value.takeIf { it.isNotEmpty() }
 }
 
+/**
+ * Placeholders a transport emits when it has an address but no identity yet.
+ * These are radio-level names, never mesh node IDs, so treating them as
+ * identities would show "BLE peer" to the user as if it were a person.
+ */
+private val PEER_LABEL_PLACEHOLDERS = setOf("BLE PEER", "UNKNOWN", "NODE", "")
+
+/**
+ * Extracts mesh node IDs from transport labels of the form `NODE (address)`.
+ * Labels whose identity is still unknown are dropped rather than surfaced.
+ */
 fun parsePeerNodeIds(labels: List<String>): List<String> =
-    labels.map { it.substringBefore(" (").trim() }
-        .filter { it.isNotEmpty() }
+    labels.map { it.substringBefore(" (").trim().uppercase(Locale.US) }
+        .filter { it.isNotEmpty() && it !in PEER_LABEL_PLACEHOLDERS }
         .distinct()
 
 fun meshStatusChipLabel(started: Boolean, peerIds: List<String>): String {
@@ -61,30 +72,48 @@ data class NearbyEmptyCopy(
     val actionLabel: String
 )
 
+enum class NearbyPrimaryAction {
+    REQUEST_PERMISSION,
+    ENABLE_BLUETOOTH,
+    START_MESH,
+    NONE
+}
+
+fun nearbyPrimaryAction(
+    meshStarted: Boolean,
+    bluetoothOff: Boolean,
+    permissionsGranted: Boolean
+): NearbyPrimaryAction {
+    if (!permissionsGranted) return NearbyPrimaryAction.REQUEST_PERMISSION
+    if (bluetoothOff) return NearbyPrimaryAction.ENABLE_BLUETOOTH
+    if (!meshStarted) return NearbyPrimaryAction.START_MESH
+    return NearbyPrimaryAction.NONE
+}
+
 fun nearbyEmptyCopy(
     meshStarted: Boolean,
     bluetoothOff: Boolean,
     permissionsGranted: Boolean
 ): NearbyEmptyCopy {
-    return when {
-        bluetoothOff -> NearbyEmptyCopy(
+    return when (nearbyPrimaryAction(meshStarted, bluetoothOff, permissionsGranted)) {
+        NearbyPrimaryAction.ENABLE_BLUETOOTH -> NearbyEmptyCopy(
             title = "Bluetooth is off",
-            body = "Turn Bluetooth on so MESH can look for nearby phones.",
+            body = "Turn Bluetooth on so MESH can look for nearby phones. Queued chats stay on this phone.",
             actionLabel = "Turn on Bluetooth"
         )
-        !permissionsGranted -> NearbyEmptyCopy(
+        NearbyPrimaryAction.REQUEST_PERMISSION -> NearbyEmptyCopy(
             title = "Permission needed",
-            body = "Allow Bluetooth (and Location on older Android) so MESH can discover nearby phones.",
+            body = "MESH uses Bluetooth to find phones next to you. On older Android, Location must also be on for scanning — MESH does not use your map location.",
             actionLabel = "Allow Bluetooth"
         )
-        !meshStarted -> NearbyEmptyCopy(
+        NearbyPrimaryAction.START_MESH -> NearbyEmptyCopy(
             title = "Nearby chat is off",
             body = "Start MESH to search for phones around you. Keep the app open or use the Mesh is on notification.",
             actionLabel = "Start Mesh"
         )
-        else -> NearbyEmptyCopy(
+        NearbyPrimaryAction.NONE -> NearbyEmptyCopy(
             title = "Searching nearby…",
-            body = "No phones linked yet. Stay in range with MESH running. This is not a connection failure — nobody has appeared on the mesh.",
+            body = "No phones linked yet. This is not a connection failure — stay in range with MESH running.",
             actionLabel = "Start Mesh"
         )
     }
@@ -121,7 +150,7 @@ fun fileTransferFromProgress(
     val name = fileName?.takeIf { it.isNotBlank() } ?: previous.fileName
     val phase = when {
         receivedPath != null -> FileTransferPhase.SUCCESS
-        total > 0 && completed >= total -> FileTransferPhase.SUCCESS
+        total > 0 && completed >= total -> FileTransferPhase.WAITING_CONFIRMATION
         total > 0 -> FileTransferPhase.SENDING
         else -> FileTransferPhase.SENDING
     }

@@ -17,7 +17,14 @@ object LengthPrefixedCodec {
     fun chunks(bytes: ByteArray, chunkSize: Int): List<ByteArray> {
         val size = chunkSize.coerceAtLeast(1)
         if (bytes.isEmpty()) return listOf(ByteArray(0))
-        return bytes.asList().chunked(size).map { it.toByteArray() }
+        val out = ArrayList<ByteArray>((bytes.size + size - 1) / size)
+        var index = 0
+        while (index < bytes.size) {
+            val end = minOf(bytes.size, index + size)
+            out.add(bytes.copyOfRange(index, end))
+            index = end
+        }
+        return out
     }
 }
 

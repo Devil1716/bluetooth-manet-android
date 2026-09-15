@@ -23,6 +23,15 @@ class LengthPrefixedCodecTest {
     }
 
     @Test
+    fun `chunks without boxing preserve bytes`() {
+        val payload = ByteArray(50) { it.toByte() }
+        val parts = LengthPrefixedCodec.chunks(payload, 20)
+        assertEquals(3, parts.size)
+        assertArrayEquals(payload.copyOfRange(0, 20), parts[0])
+        assertArrayEquals(payload.copyOfRange(40, 50), parts[2])
+    }
+
+    @Test
     fun `rejects oversized declared length`() {
         val huge = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
             .putInt(LengthPrefixedCodec.MAX_PAYLOAD_BYTES + 1)

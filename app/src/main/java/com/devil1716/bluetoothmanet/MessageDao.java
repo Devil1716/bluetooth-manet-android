@@ -20,4 +20,8 @@ public interface MessageDao {
 
     @Query("UPDATE messages SET status = :status WHERE id = :id")
     void updateStatus(String id, MessageStatus status);
+
+    /** Used when a message request is declined; the thread is discarded. */
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId")
+    void deleteConversation(String conversationId);
 }

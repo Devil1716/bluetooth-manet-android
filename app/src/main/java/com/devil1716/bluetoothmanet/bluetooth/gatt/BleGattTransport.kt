@@ -28,6 +28,9 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
+import com.devil1716.bluetoothmanet.bluetooth.MeshPeer
+import com.devil1716.bluetoothmanet.bluetooth.MeshPresence
+import com.devil1716.bluetoothmanet.bluetooth.shouldInitiateLink
 import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
@@ -43,7 +46,9 @@ class BleGattTransport(
 ) {
     interface Listener {
         fun onLog(message: String)
-        fun onPeersChanged(labels: List<String>)
+
+        /** The roster of mesh phones in range, including ones not yet linked. */
+        fun onPeersChanged(peers: List<MeshPeer>)
         fun onPayloadReceived(peerId: String, payload: ByteArray)
     }
 
@@ -55,21 +60,90 @@ class BleGattTransport(
     private val links = ConcurrentHashMap<String, GattLink>()
     private val lastAttempt = ConcurrentHashMap<String, Long>()
     private val clientCallbacks = ConcurrentHashMap<String, ClientCallback>()
+    private val connectTimeouts = ConcurrentHashMap<String, Runnable>()
+    private val presence = MeshPresence()
 
-    private var nodeId = "NODE"
+    private var nodeId = DEFAULT_NODE_ID
     private var running = false
+    private var scanning = false
     private var gattServer: BluetoothGattServer? = null
     private var packetCharacteristic: BluetoothGattCharacteristic? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     private var advertiseCallback: AdvertiseCallback? = null
 
+    private var lastScanCycleAt = 0L
+    private var lastCollisionLogAt = 0L
+
+    /**
+     * Expires peers that walked away, dials peers the tie-break rule left
+     * stranded, and periodically cycles the scan so a long-running scan is not
+     * quietly downgraded by the platform.
+     */
+    private val maintenance = object : Runnable {
+        override fun run() {
+            if (!running) return
+            val now = System.currentTimeMillis()
+            if (presence.prune(now)) publishPeers()
+            sweepIdleLinks()
+            dialStalledPeers()
+            // Android rejects more than a handful of scan starts per 30s and
+            // then stops reporting results, so cycle well inside that budget.
+            if (now - lastScanCycleAt >= SCAN_CYCLE_INTERVAL_MS) {
+                lastScanCycleAt = now
+                restartScanning()
+            }
+            handler.postDelayed(this, MAINTENANCE_INTERVAL_MS)
+        }
+    }
+
     fun start(nodeId: String) {
-        this.nodeId = if (nodeId.isBlank()) "NODE" else nodeId.trim().uppercase()
+        this.nodeId = MeshPresence.normalizeNodeId(nodeId).ifEmpty { DEFAULT_NODE_ID }
         handler.post { startLocked() }
     }
 
+    /** Records the node ID proven by a signed HELLO over this link. */
+    fun noteVerifiedNodeId(address: String, peerNodeId: String) {
+        handler.post {
+            val key = MeshPresence.normalizeAddress(address) ?: return@post
+            links[key]?.nodeId = MeshPresence.normalizeNodeId(peerNodeId)
+            if (presence.onVerifiedNodeId(key, peerNodeId, System.currentTimeMillis())) {
+                publishPeers()
+            }
+        }
+    }
+
+    /** Mesh phones in range right now, linked or merely advertising. */
+    fun nearbyPeers(): List<MeshPeer> = presence.snapshot(System.currentTimeMillis())
+
     fun stop() {
-        handler.post { stopLocked() }
+        pauseInternal(quitWorker = true)
+    }
+
+    fun pause() {
+        pauseInternal(quitWorker = false)
+    }
+
+    private fun pauseInternal(quitWorker: Boolean) {
+        val done = java.util.concurrent.CountDownLatch(1)
+        val posted = handler.post {
+            try {
+                stopLocked()
+            } finally {
+                done.countDown()
+            }
+        }
+        if (posted) {
+            try {
+                done.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        } else {
+            stopLocked()
+        }
+        if (quitWorker) {
+            worker.quitSafely()
+        }
     }
 
     fun connect(address: String) {
@@ -84,13 +158,17 @@ class BleGattTransport(
         var sent = 0
         for (link in links.values) {
             if (link.address.equals(exceptPeerId, ignoreCase = true)) continue
+            // A half-open link has no writable role yet; counting it would make
+            // the mesh manager believe a packet was handed off when it was not.
+            if (!link.hasAnyRole()) continue
             handler.post { enqueue(link, bytes) }
             sent++
         }
         return sent
     }
 
-    fun hasPeers(): Boolean = links.isNotEmpty()
+    /** True only when a writable link exists; advertising peers cannot carry data. */
+    fun hasPeers(): Boolean = links.values.any { it.hasAnyRole() }
 
     fun peerLabels(): List<String> = links.values.map { it.label() }
 
@@ -107,6 +185,7 @@ class BleGattTransport(
             listener.onLog("BLE mesh idle: Bluetooth permissions are missing.")
             return
         }
+        running = true
         if (openServer()) {
             listener.onLog("BLE GATT server registered. Advertising starts after the service is added.")
             handler.postDelayed({
@@ -120,16 +199,18 @@ class BleGattTransport(
             startAdvertising()
             startScanning()
         }
-        running = true
-        listener.onLog("BitChat-style BLE mesh started (central + peripheral). Pairing is not required.")
+        handler.removeCallbacks(maintenance)
+        handler.postDelayed(maintenance, MAINTENANCE_INTERVAL_MS)
+        listener.onLog("BLE mesh started as central and peripheral. Pairing is not required.")
     }
 
     @SuppressLint("MissingPermission")
     private fun stopLocked() {
         running = false
-        runCatching {
-            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
-        }
+        handler.removeCallbacks(maintenance)
+        connectTimeouts.values.forEach { handler.removeCallbacks(it) }
+        connectTimeouts.clear()
+        stopScanning()
         advertiseCallback?.let { callback ->
             runCatching { advertiser?.stopAdvertising(callback) }
         }
@@ -138,6 +219,9 @@ class BleGattTransport(
             runCatching { link.gatt?.close() }
         }
         links.clear()
+        clientCallbacks.clear()
+        lastAttempt.clear()
+        presence.clear()
         runCatching { gattServer?.close() }
         gattServer = null
         packetCharacteristic = null
@@ -210,15 +294,30 @@ class BleGattTransport(
     }
 
     @SuppressLint("MissingPermission")
-    private fun startScanning() {
-        if (!hasScanPermission()) return
+    private fun startScanning(announce: Boolean = true) {
+        if (!hasScanPermission() || scanning) return
         val scanner = adapter?.bluetoothLeScanner ?: return
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MeshGattProtocol.SERVICE_UUID)).build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
-        scanner.startScan(listOf(filter), settings, scanCallback)
-        listener.onLog("BLE scanning for nearby mesh phones...")
+        val started = runCatching { scanner.startScan(listOf(filter), settings, scanCallback) }.isSuccess
+        scanning = started
+        if (started && announce) listener.onLog("BLE scanning for nearby mesh phones...")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopScanning() {
+        if (!scanning) return
+        scanning = false
+        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+    }
+
+    /** Periodic refresh; stays quiet so it does not flood the activity log. */
+    private fun restartScanning() {
+        stopScanning()
+        startScanning(announce = false)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -226,7 +325,12 @@ class BleGattTransport(
             handler.post { onScan(result) }
         }
 
+        override fun onBatchScanResults(results: List<ScanResult>) {
+            handler.post { results.forEach { onScan(it) } }
+        }
+
         override fun onScanFailed(errorCode: Int) {
+            scanning = false
             listener.onLog("BLE scan failed: $errorCode")
         }
     }
@@ -235,45 +339,115 @@ class BleGattTransport(
     private fun onScan(result: ScanResult) {
         if (!running) return
         val device = result.device ?: return
+        val address = MeshPresence.normalizeAddress(device.address) ?: return
         val advertisedId = advertisedNodeId(result)
-        if (advertisedId != null && advertisedId.equals(nodeId, ignoreCase = true)) return
-        if (links.containsKey(device.address)) return
-        if (links.size >= MeshGattProtocol.MAX_LINKS) return
         val now = System.currentTimeMillis()
-        val previous = lastAttempt[device.address] ?: 0L
-        if (now - previous < 8_000L) return
-        if (advertisedId != null && nodeId < advertisedId) {
+        // Android never surfaces our own advertisement, so a matching ID means
+        // two phones picked the same node ID. Say so instead of going quiet,
+        // but only occasionally: scan results arrive many times per second.
+        if (advertisedId != null && advertisedId.equals(nodeId, ignoreCase = true)) {
+            if (now - lastCollisionLogAt >= COLLISION_LOG_INTERVAL_MS) {
+                lastCollisionLogAt = now
+                listener.onLog("Another phone nearby uses node ID $nodeId. Change one of them in Profile.")
+            }
             return
         }
+        // Record the peer before deciding anything about connecting: the Nearby
+        // list should show phones in range even while the link is still pending.
+        if (presence.onAdvertisement(address, advertisedId, result.rssi, now)) publishPeers()
+        links[address]?.rssi = result.rssi
+        if (links[address]?.hasAnyRole() == true) return
+        if (links.size >= MeshGattProtocol.MAX_LINKS) return
+        val previous = lastAttempt[address] ?: 0L
+        if (now - previous < CONNECT_RETRY_INTERVAL_MS) return
+        if (!shouldInitiateLink(nodeId, advertisedId)) return
         connectAsClient(device, forced = false)
+    }
+
+    /**
+     * Dials peers that have been visible for a while with no link. The
+     * tie-break rule parks the lower-ID side, so without this a peer whose
+     * scanner is throttled would never be connected by either phone.
+     */
+    @SuppressLint("MissingPermission")
+    private fun dialStalledPeers() {
+        if (links.size >= MeshGattProtocol.MAX_LINKS) return
+        val now = System.currentTimeMillis()
+        for (peer in presence.stalledPeers(now, LINK_STALL_GRACE_MS)) {
+            if (links[peer.address]?.hasAnyRole() == true) continue
+            if (now - (lastAttempt[peer.address] ?: 0L) < CONNECT_RETRY_INTERVAL_MS) continue
+            val device = runCatching { adapter?.getRemoteDevice(peer.address) }.getOrNull() ?: continue
+            connectAsClient(device, forced = false)
+            if (links.size >= MeshGattProtocol.MAX_LINKS) return
+        }
+    }
+
+    /**
+     * Removes link slots that hold no GATT role. A stray write from an unknown
+     * address creates one, and leaving it behind consumes a slot against
+     * [MeshGattProtocol.MAX_LINKS] that real peers then cannot use.
+     */
+    private fun sweepIdleLinks() {
+        for (entry in links.entries.toList()) {
+            if (entry.value.hasAnyRole()) continue
+            if (clientCallbacks.containsKey(entry.key)) continue
+            links.remove(entry.key)
+        }
     }
 
     private fun advertisedNodeId(result: ScanResult): String? {
         val data = result.scanRecord?.getManufacturerSpecificData(MeshGattProtocol.MANUFACTURER_ID) ?: return null
-        return runCatching { String(data, StandardCharsets.UTF_8).trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
+        val decoded = runCatching { String(data, StandardCharsets.UTF_8) }.getOrNull() ?: return null
+        return MeshPresence.normalizeNodeId(decoded).takeIf { it.isNotEmpty() }
     }
 
     @SuppressLint("MissingPermission")
     private fun connectAsClient(device: BluetoothDevice, forced: Boolean) {
         if (!hasConnectPermission() || adapter == null) return
-        if (links.containsKey(device.address) || clientCallbacks.containsKey(device.address)) {
-            if (forced) listener.onLog("Already linking to " + device.address)
+        val address = MeshPresence.normalizeAddress(device.address) ?: return
+        if (links[address]?.gatt != null || clientCallbacks.containsKey(address)) {
+            if (forced) listener.onLog("Already linking to $address")
             return
         }
         if (!forced && links.size >= MeshGattProtocol.MAX_LINKS) return
-        lastAttempt[device.address] = System.currentTimeMillis()
+        lastAttempt[address] = System.currentTimeMillis()
         listener.onLog("BLE connecting to " + safeName(device))
-        val callback = ClientCallback(device.address)
-        clientCallbacks[device.address] = callback
+        val callback = ClientCallback(address)
+        clientCallbacks[address] = callback
         val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
         } else {
             device.connectGatt(appContext, false, callback)
         }
         if (gatt == null) {
-            clientCallbacks.remove(device.address)
-            listener.onLog("BLE connectGatt returned null for " + device.address)
+            clientCallbacks.remove(address)
+            listener.onLog("BLE connectGatt returned null for $address")
+            return
         }
+        armConnectTimeout(address, gatt)
+    }
+
+    /**
+     * A BLE connect attempt can simply never call back. Without this the
+     * address stays in [clientCallbacks] forever and that peer can never be
+     * retried, so it disappears from the mesh until the app restarts.
+     */
+    private fun armConnectTimeout(address: String, gatt: BluetoothGatt) {
+        cancelConnectTimeout(address)
+        val timeout = Runnable {
+            connectTimeouts.remove(address)
+            if (links[address]?.gatt != null) return@Runnable
+            clientCallbacks.remove(address)
+            runCatching { gatt.close() }
+            listener.onLog("BLE connect to $address timed out; will retry.")
+            dropIfIdle(address)
+        }
+        connectTimeouts[address] = timeout
+        handler.postDelayed(timeout, CONNECT_TIMEOUT_MS)
+    }
+
+    private fun cancelConnectTimeout(address: String) {
+        connectTimeouts.remove(address)?.let { handler.removeCallbacks(it) }
     }
 
     private val serverCallback = object : BluetoothGattServerCallback() {
@@ -291,22 +465,24 @@ class BleGattTransport(
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             handler.post {
+                val address = MeshPresence.normalizeAddress(device.address) ?: return@post
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    val link = links.getOrPut(device.address) { GattLink(device.address) }
+                    val link = links.getOrPut(address) { GattLink(address) }
                     link.serverDevice = device
                     link.displayDevice = device
                     listener.onLog("BLE peripheral linked " + safeName(device))
+                    presence.onLinked(address, link.nodeId, System.currentTimeMillis())
                     publishPeers()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    links[device.address]?.serverDevice = null
-                    dropIfIdle(device.address)
+                    links[address]?.serverDevice = null
+                    dropIfIdle(address)
                 }
             }
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             handler.post {
-                links[device.address]?.mtu = mtu
+                MeshPresence.normalizeAddress(device.address)?.let { links[it]?.mtu = mtu }
             }
         }
 
@@ -320,8 +496,9 @@ class BleGattTransport(
             value: ByteArray?
         ) {
             handler.post {
-                if (descriptor.uuid == MeshGattProtocol.CCCD_UUID) {
-                    val link = links.getOrPut(device.address) { GattLink(device.address) }
+                val address = MeshPresence.normalizeAddress(device.address)
+                if (descriptor.uuid == MeshGattProtocol.CCCD_UUID && address != null) {
+                    val link = links.getOrPut(address) { GattLink(address) }
                     link.serverDevice = device
                     link.displayDevice = device
                     link.notifyEnabled = true
@@ -345,7 +522,8 @@ class BleGattTransport(
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value)
             }
             if (value == null || value.isEmpty()) return
-            handler.post { ingest(device.address, device, value) }
+            val address = MeshPresence.normalizeAddress(device.address) ?: return
+            handler.post { ingest(address, device, value) }
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
@@ -357,13 +535,20 @@ class BleGattTransport(
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             handler.post {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    cancelConnectTimeout(address)
                     val link = links.getOrPut(address) { GattLink(address) }
                     link.gatt = gatt
                     link.displayDevice = gatt.device
                     listener.onLog("BLE central linked " + safeName(gatt.device))
+                    presence.onLinked(address, link.nodeId, System.currentTimeMillis())
                     publishPeers()
-                    runCatching { gatt.requestMtu(MeshGattProtocol.REQUEST_MTU) }
+                    // If the MTU request is refused its callback never fires, so
+                    // discovery has to be kicked off here instead.
+                    val requested = runCatching { gatt.requestMtu(MeshGattProtocol.REQUEST_MTU) }
+                        .getOrDefault(false)
+                    if (!requested) runCatching { gatt.discoverServices() }
                 } else {
+                    cancelConnectTimeout(address)
                     clientCallbacks.remove(address)
                     runCatching { gatt.close() }
                     links[address]?.gatt = null
@@ -392,7 +577,7 @@ class BleGattTransport(
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            handler.post { onClientWriteComplete(gatt.device.address, status) }
+            handler.post { onClientWriteComplete(address, status) }
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -411,13 +596,14 @@ class BleGattTransport(
 
     @SuppressLint("MissingPermission")
     private fun enableClientNotifications(gatt: BluetoothGatt) {
+        val address = MeshPresence.normalizeAddress(gatt.device.address) ?: return
         val service = gatt.getService(MeshGattProtocol.SERVICE_UUID)
         val characteristic = service?.getCharacteristic(MeshGattProtocol.PACKET_UUID)
         if (characteristic == null) {
-            listener.onLog("Peer " + gatt.device.address + " is not running the MANET GATT service.")
+            listener.onLog("Peer $address is not running the MESH service.")
             return
         }
-        val link = links.getOrPut(gatt.device.address) { GattLink(gatt.device.address) }
+        val link = links.getOrPut(address) { GattLink(address) }
         link.gatt = gatt
         link.displayDevice = gatt.device
         link.remoteCharacteristic = characteristic
@@ -534,13 +720,22 @@ class BleGattTransport(
     private fun dropIfIdle(address: String) {
         val link = links[address] ?: return
         if (link.hasAnyRole()) return
+        handler.removeCallbacks(link.writeTimeout)
         links.remove(address)
+        // The peer keeps its slot in the roster: it may still be advertising
+        // nearby, and dropping it here would make it flicker out of the list.
+        presence.onUnlinked(address, System.currentTimeMillis())
         listener.onLog("BLE disconnected $address")
         publishPeers()
     }
 
     private fun publishPeers() {
-        listener.onPeersChanged(peerLabels())
+        val now = System.currentTimeMillis()
+        val linked = links.keys
+        val roster = presence.snapshot(now).map { peer ->
+            if (peer.address in linked) peer.copy(rssi = links[peer.address]?.rssi ?: peer.rssi) else peer
+        }
+        listener.onPeersChanged(roster)
     }
 
     @SuppressLint("MissingPermission")
@@ -576,17 +771,30 @@ class BleGattTransport(
         var mtu: Int = MeshGattProtocol.DEFAULT_ATT_MTU
         var notifyEnabled: Boolean = false
         var sending: Boolean = false
+        var nodeId: String = ""
+        var rssi: Int = 0
         var writeTimeout: Runnable = Runnable {}
         val queue: ArrayDeque<ByteArray> = ArrayDeque()
         val assembler = LengthPrefixedAssembler()
 
         fun chunkSize(): Int = (mtu - MeshGattProtocol.ATT_HEADER_BYTES).coerceAtLeast(20)
 
-        fun label(): String {
-            val name = displayDevice?.name ?: serverDevice?.name ?: gatt?.device?.name
-            return (if (name.isNullOrBlank()) "BLE peer" else name) + " (" + address + ")"
-        }
+        /** Mesh node ID when the handshake has run, address otherwise. */
+        fun label(): String =
+            if (nodeId.isNotBlank()) "$nodeId ($address)" else "BLE peer ($address)"
 
         fun hasAnyRole(): Boolean = gatt != null || serverDevice != null
+    }
+
+    private companion object {
+        const val DEFAULT_NODE_ID = "NODE"
+        const val CONNECT_TIMEOUT_MS = 12_000L
+        const val CONNECT_RETRY_INTERVAL_MS = 8_000L
+        const val MAINTENANCE_INTERVAL_MS = 6_000L
+        const val SCAN_CYCLE_INTERVAL_MS = 24_000L
+        const val COLLISION_LOG_INTERVAL_MS = 30_000L
+
+        /** How long to respect the tie-break before dialling anyway. */
+        const val LINK_STALL_GRACE_MS = 15_000L
     }
 }

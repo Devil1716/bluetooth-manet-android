@@ -18,7 +18,7 @@ Android phones talk over a BitChat-style BLE mesh. A Windows laptop can still jo
 - Launcher: `ComposeMeshActivity` (legacy XML console is `MainActivity`, hidden behind a long-press on the version in Settings → About)
 - Min SDK: 21
 - Target / Compile SDK: 34
-- Current release: `v1.4.1`
+- Current release: `v1.4.2`
 - Android Gradle Plugin: `8.5.2`
 
 ## How to run
@@ -63,5 +63,5 @@ BLE mesh, flood routing, presence hellos, and store-and-forward are documented i
 Do **not** ship `app-debug.apk`. Configure the Actions secrets described in [docs/SIGNING.md](docs/SIGNING.md), then:
 
 1. Open **Actions → Android Release → Run workflow**.
-2. Set `tag` to the version tag (example: `v1.4.1`).
+2. Set `tag` to the version tag (example: `v1.4.2`).
 3. The workflow runs unit tests and attaches `app-release.apk` only when release signing secrets are present.

@@ -28,12 +28,13 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
 import com.devil1716.bluetoothmanet.BuildConfig
 import com.devil1716.bluetoothmanet.MainActivity
+import com.devil1716.bluetoothmanet.MeshDiagnostics
+import com.devil1716.bluetoothmanet.MeshIo
 import com.devil1716.bluetoothmanet.MeshService
 import com.devil1716.bluetoothmanet.PeerDevice
 import com.devil1716.bluetoothmanet.update.AppUpdater
 import com.devil1716.bluetoothmanet.update.UpdateListener
 import com.devil1716.bluetoothmanet.update.UpdatePhase
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.LinkedHashMap
 import java.util.Locale
@@ -44,7 +45,7 @@ class ComposeMeshActivity : ComponentActivity() {
         ViewModelProvider(this)[MeshHomeViewModel::class.java]
     }
     private val updateListener = UpdateListener { state ->
-        runOnUiThread { viewModel.setUpdate(state) }
+        if (!isDestroyed) runOnUiThread { viewModel.setUpdate(state) }
     }
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private val discoveredPeers = LinkedHashMap<String, PeerDevice>()
@@ -57,15 +58,31 @@ class ComposeMeshActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             val destination = pendingFileDestination
             pendingFileDestination = null
-            if (uri == null || destination.isNullOrBlank()) return@registerForActivityResult
+            if (uri == null) {
+                viewModel.setFileTransfer(FileTransferUi(phase = FileTransferPhase.NONE))
+                return@registerForActivityResult
+            }
+            if (destination.isNullOrBlank()) {
+                viewModel.setFileTransfer(
+                    FileTransferUi(
+                        phase = FileTransferPhase.FAILED,
+                        error = "Couldn't send the file. Open the chat again and pick it once more."
+                    )
+                )
+                return@registerForActivityResult
+            }
             ioExecutor.execute {
                 try {
                     val size = queryFileSize(uri)
                     val name = queryDisplayName(uri)
-                    runOnUiThread {
+                    if (size > 0 && MeshIo.exceedsLimit(size, MeshIo.MAX_FILE_BYTES)) {
+                        postFileError(name, "This file is larger than 2 MB. Choose a smaller one. Nothing was sent.")
+                        return@execute
+                    }
+                    postOnUi {
                         viewModel.setFileTransfer(
                             FileTransferUi(
-                                phase = FileTransferPhase.SENDING,
+                                phase = FileTransferPhase.PREPARING,
                                 fileName = name,
                                 sizeLabel = formatByteSize(size),
                                 completed = 0,
@@ -74,46 +91,34 @@ class ComposeMeshActivity : ComponentActivity() {
                         )
                     }
                     contentResolver.openInputStream(uri).use { input ->
-                        if (input == null) throw IllegalStateException("Could not open file")
-                        val output = ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) output.write(buffer, 0, read)
+                        if (input == null) throw java.io.IOException("missing")
+                        val bytes = MeshIo.readBounded(input, MeshIo.MAX_FILE_BYTES)
                         startMeshService()
-                        val sent = MeshService.sendFile(this, destination, name, output.toByteArray())
-                        runOnUiThread {
+                        val sent = MeshService.sendFile(this, destination, name, bytes)
+                        postOnUi {
+                            viewModel.setFileTransfer(
+                                FileTransferUi(
+                                    phase = if (sent) FileTransferPhase.SENDING else FileTransferPhase.FAILED,
+                                    fileName = name,
+                                    sizeLabel = formatByteSize(bytes.size.toLong()),
+                                    completed = 0,
+                                    total = 0,
+                                    error = if (sent) "" else "Connection lost. The file is still on your phone — try again when someone is nearby."
+                                )
+                            )
                             if (sent) {
-                                viewModel.setFileTransfer(
-                                    FileTransferUi(
-                                        phase = FileTransferPhase.SENDING,
-                                        fileName = name,
-                                        sizeLabel = formatByteSize(size),
-                                        completed = 0,
-                                        total = 0
-                                    )
-                                )
                                 viewModel.onMeshStatus(null, null, "Signed file transfer queued: $name")
-                            } else {
-                                viewModel.setFileTransfer(
-                                    FileTransferUi(
-                                        phase = FileTransferPhase.FAILED,
-                                        fileName = name,
-                                        sizeLabel = formatByteSize(size),
-                                        error = "Couldn't send the file. Stay in the app and try again."
-                                    )
-                                )
                             }
                         }
                     }
-                } catch (error: Exception) {
-                    runOnUiThread {
-                        viewModel.setFileTransfer(
-                            FileTransferUi(
-                                phase = FileTransferPhase.FAILED,
-                                error = "File error: ${error.message}"
-                            )
-                        )
-                    }
+                } catch (_: MeshIo.FileTooLargeException) {
+                    postFileError(null, "This file is larger than 2 MB. Choose a smaller one. Nothing was sent.")
+                } catch (_: OutOfMemoryError) {
+                    postFileError(null, "This file is too large for this phone to send.")
+                } catch (_: SecurityException) {
+                    postFileError(null, "MESH lost access to that file. Pick it again.")
+                } catch (_: Exception) {
+                    postFileError(null, "Couldn't open the file. It may have been moved. Pick it again.")
                 }
             }
         }
@@ -165,13 +170,26 @@ class ComposeMeshActivity : ComponentActivity() {
                 BluetoothDevice.ACTION_FOUND -> {
                     val device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) as BluetoothDevice?
                     if (device?.address != null) {
-                        discoveredPeers[device.address] = PeerDevice(device.name, device.address)
+                        val name = try {
+                            device.name
+                        } catch (_: SecurityException) {
+                            null
+                        }
+                        discoveredPeers[device.address] = PeerDevice(name, device.address)
                         viewModel.setClassicPeers(discoveredPeers.values.toList())
                     }
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_STARTED -> viewModel.appendLog("Looking for paired devices…")
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED ->
                     viewModel.appendLog(String.format(Locale.US, "Found %d device(s).", discoveredPeers.size))
+                BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                    refreshPermissionState()
+                    val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                    if (state == BluetoothAdapter.STATE_OFF) {
+                        viewModel.markMeshStopped()
+                        viewModel.appendLog("Bluetooth turned off. Queued messages stay on this phone.")
+                    }
+                }
             }
         }
     }
@@ -210,6 +228,9 @@ class ComposeMeshActivity : ComponentActivity() {
                 else -> null
             }
             viewModel.onMeshStatus(intent.getStringExtra("message"), peers, fileProgress, transferUpdate)
+            if (intent.getBooleanExtra("nearby_changed", false)) {
+                viewModel.onNearbyRosterChanged(intent.getIntExtra("nearby_count", 0))
+            }
             if (intent.getBooleanExtra("mesh_stopped", false)) {
                 viewModel.markMeshStopped()
             }
@@ -230,15 +251,20 @@ class ComposeMeshActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        pendingFileDestination = savedInstanceState?.getString(STATE_FILE_DESTINATION)
         WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = false
         if (bluetoothAdapter == null) {
-            Toast.makeText(this, "Bluetooth is not supported on this device.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "This phone does not support Bluetooth, so MESH cannot run.", Toast.LENGTH_LONG).show()
             finish()
             return
         }
-        ContextCompat.registerReceiver(this, discoveryReceiver, IntentFilter(BluetoothDevice.ACTION_FOUND), ContextCompat.RECEIVER_NOT_EXPORTED)
-        ContextCompat.registerReceiver(this, discoveryReceiver, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_STARTED), ContextCompat.RECEIVER_NOT_EXPORTED)
-        ContextCompat.registerReceiver(this, discoveryReceiver, IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        val discoveryFilter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+        }
+        ContextCompat.registerReceiver(this, discoveryReceiver, discoveryFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(this, meshEventReceiver, IntentFilter(MeshService.ACTION_MESSAGE_EVENT), ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(this, meshStatusReceiver, IntentFilter(MeshService.ACTION_MESH_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(
@@ -248,6 +274,7 @@ class ComposeMeshActivity : ComponentActivity() {
             ContextCompat.RECEIVER_EXPORTED
         )
         receiversRegistered = true
+        MeshDiagnostics.record("lifecycle", "activity_create")
 
         viewModel.appendLog("Mesh v${BuildConfig.VERSION_NAME} ready.")
         refreshPermissionState()
@@ -260,6 +287,7 @@ class ComposeMeshActivity : ComponentActivity() {
                 viewModel = viewModel,
                 actions = MeshActions(
                     startMesh = { startListening() },
+                    stopMesh = { stopMesh() },
                     enableBluetooth = { ensureBluetoothEnabled() },
                     makeDiscoverable = { requestDiscoverableMode() },
                     discoverPeers = { startDiscovery() },
@@ -275,7 +303,7 @@ class ComposeMeshActivity : ComponentActivity() {
                             startMeshService()
                             val sent = MeshService.sendMessage(this, destination, body)
                             if (!sent) {
-                                Toast.makeText(this, "Couldn't send. Stay in the app and try again.", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this, "Couldn't send. Check Bluetooth permission, then try again.", Toast.LENGTH_SHORT).show()
                             } else {
                                 viewModel.refresh()
                             }
@@ -430,8 +458,19 @@ class ComposeMeshActivity : ComponentActivity() {
     }
 
     private fun ensureBluetoothEnabled() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNeededPermissions()
+            return
+        }
         if (bluetoothAdapter?.isEnabled == false) {
-            enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            try {
+                enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            } catch (_: SecurityException) {
+                requestNeededPermissions()
+            }
         } else {
             viewModel.appendLog("Bluetooth is already on.")
         }
@@ -446,6 +485,13 @@ class ComposeMeshActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun startDiscovery() {
         val adapter = bluetoothAdapter ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNeededPermissions()
+            return
+        }
         if (adapter.isEnabled != true) {
             viewModel.appendLog("Turn Bluetooth on to find devices.")
             ensureBluetoothEnabled()
@@ -453,9 +499,13 @@ class ComposeMeshActivity : ComponentActivity() {
         }
         discoveredPeers.clear()
         preloadBondedDevices()
-        if (adapter.isDiscovering) adapter.cancelDiscovery()
-        if (adapter.startDiscovery()) viewModel.appendLog("Looking for paired devices…")
-        else viewModel.appendLog("Couldn't start device search.")
+        try {
+            if (adapter.isDiscovering) adapter.cancelDiscovery()
+            if (adapter.startDiscovery()) viewModel.appendLog("Looking for paired devices…")
+            else viewModel.appendLog("Couldn't start device search.")
+        } catch (_: SecurityException) {
+            requestNeededPermissions()
+        }
     }
 
     private fun startListening() {
@@ -463,6 +513,7 @@ class ComposeMeshActivity : ComponentActivity() {
         val permission = viewModel.uiState.value.permission
         if (!permission.allGranted) {
             viewModel.appendLog("Allow Bluetooth before turning on nearby chat.")
+            requestNeededPermissions()
             return
         }
         if (permission.bluetoothOff) {
@@ -473,9 +524,25 @@ class ComposeMeshActivity : ComponentActivity() {
         startMeshService()
         viewModel.markMeshStarted()
         viewModel.appendLog("Nearby chat is on.")
+        MeshDiagnostics.record("lifecycle", "mesh_start")
         if (permission.locationServicesOff) {
             viewModel.appendLog("Turn on Location so this phone can find nearby chats.")
         }
+    }
+
+    private fun stopMesh() {
+        val intent = Intent(this, MeshService::class.java).setAction(MeshService.ACTION_STOP)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this, intent)
+            } else {
+                startService(intent)
+            }
+        } catch (_: IllegalStateException) {
+            stopService(Intent(this, MeshService::class.java))
+        }
+        viewModel.markMeshStopped()
+        MeshDiagnostics.record("lifecycle", "mesh_stop")
     }
 
     @SuppressLint("MissingPermission")
@@ -577,14 +644,42 @@ class ComposeMeshActivity : ComponentActivity() {
         AppUpdater.installPendingIfReady(this, updateListener)
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        pendingFileDestination?.let { outState.putString(STATE_FILE_DESTINATION, it) }
+    }
+
     override fun onDestroy() {
         if (receiversRegistered) {
-            unregisterReceiver(discoveryReceiver)
-            unregisterReceiver(meshEventReceiver)
-            unregisterReceiver(meshStatusReceiver)
-            unregisterReceiver(installResultReceiver)
+            runCatching { unregisterReceiver(discoveryReceiver) }
+            runCatching { unregisterReceiver(meshEventReceiver) }
+            runCatching { unregisterReceiver(meshStatusReceiver) }
+            runCatching { unregisterReceiver(installResultReceiver) }
         }
         ioExecutor.shutdown()
         super.onDestroy()
+    }
+
+    private fun postOnUi(block: () -> Unit) {
+        if (isDestroyed) return
+        runOnUiThread {
+            if (!isDestroyed) block()
+        }
+    }
+
+    private fun postFileError(fileName: String?, message: String) {
+        postOnUi {
+            viewModel.setFileTransfer(
+                FileTransferUi(
+                    phase = FileTransferPhase.FAILED,
+                    fileName = fileName.orEmpty(),
+                    error = message
+                )
+            )
+        }
+    }
+
+    companion object {
+        private const val STATE_FILE_DESTINATION = "pending_file_destination"
     }
 }
