@@ -30,8 +30,6 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - uses: android-actions/setup-android@v3
-
       - name: Unit tests and debug APK
         run: |
           chmod +x gradlew
