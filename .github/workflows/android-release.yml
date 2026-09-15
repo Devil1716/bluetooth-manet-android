@@ -48,15 +48,25 @@ jobs:
           ./gradlew testDebugUnitTest
 
       - name: Decode release keystore
-        if: ${{ secrets.MESH_KEYSTORE_BASE64 != '' }}
+        id: signing
         env:
           MESH_KEYSTORE_BASE64: ${{ secrets.MESH_KEYSTORE_BASE64 }}
+          MESH_STORE_PASSWORD: ${{ secrets.MESH_STORE_PASSWORD }}
+          MESH_KEY_PASSWORD: ${{ secrets.MESH_KEY_PASSWORD }}
         run: |
+          if [ -z "$MESH_KEYSTORE_BASE64" ] || [ -z "$MESH_STORE_PASSWORD" ] || [ -z "$MESH_KEY_PASSWORD" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Release signing secrets are not configured; this job will not attach an APK."
+            echo "Set MESH_KEYSTORE_BASE64, MESH_STORE_PASSWORD, MESH_KEY_ALIAS, and MESH_KEY_PASSWORD to build on CI."
+            echo "Do not attach app-debug.apk as the product artifact."
+            exit 0
+          fi
           mkdir -p app/keystore
           echo "$MESH_KEYSTORE_BASE64" | base64 -d > app/keystore/mesh-update.jks
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Build release APK
-        if: ${{ secrets.MESH_KEYSTORE_BASE64 != '' && secrets.MESH_STORE_PASSWORD != '' && secrets.MESH_KEY_PASSWORD != '' }}
+        if: steps.signing.outputs.configured == 'true'
         env:
           MESH_STORE_FILE: app/keystore/mesh-update.jks
           MESH_STORE_PASSWORD: ${{ secrets.MESH_STORE_PASSWORD }}
@@ -66,22 +76,15 @@ jobs:
           export MESH_KEY_ALIAS="${MESH_KEY_ALIAS:-mesh}"
           ./gradlew assembleRelease
 
-      - name: Skip APK when signing secrets are absent
-        if: ${{ secrets.MESH_KEYSTORE_BASE64 == '' || secrets.MESH_STORE_PASSWORD == '' || secrets.MESH_KEY_PASSWORD == '' }}
-        run: |
-          echo "Release signing secrets are not configured; this job will not attach an APK."
-          echo "Set MESH_KEYSTORE_BASE64, MESH_STORE_PASSWORD, MESH_KEY_ALIAS, and MESH_KEY_PASSWORD to build on CI."
-          echo "Do not attach app-debug.apk as the product artifact."
-
       - name: Upload workflow artifact
-        if: ${{ secrets.MESH_KEYSTORE_BASE64 != '' && secrets.MESH_STORE_PASSWORD != '' && secrets.MESH_KEY_PASSWORD != '' }}
+        if: steps.signing.outputs.configured == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: bluetooth-manet-release-apk
           path: app/build/outputs/apk/release/app-release.apk
 
       - name: Attach APK to release
-        if: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && secrets.MESH_KEYSTORE_BASE64 != '' && secrets.MESH_STORE_PASSWORD != '' && secrets.MESH_KEY_PASSWORD != '' }}
+        if: steps.signing.outputs.configured == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
