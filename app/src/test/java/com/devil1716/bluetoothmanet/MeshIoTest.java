@@ -47,8 +47,38 @@ public class MeshIoTest {
     }
 
     @Test
+    public void copiesStreamToFileWithCap() throws Exception {
+        File dest = Files.createTempFile("mesh-copy", ".bin").toFile();
+        try {
+            int copied = MeshIo.copyBounded(new ByteArrayInputStream(new byte[] {9, 8, 7}), dest, 16);
+            assertEquals(3, copied);
+            assertArrayEquals(new byte[] {9, 8, 7}, Files.readAllBytes(dest.toPath()));
+        } finally {
+            dest.delete();
+        }
+    }
+
+    @Test
+    public void copyBoundedDeletesDestWhenOversize() throws Exception {
+        File dest = Files.createTempFile("mesh-copy-big", ".bin").toFile();
+        try {
+            MeshIo.copyBounded(new ByteArrayInputStream(new byte[32]), dest, 8);
+            fail("expected FileTooLargeException");
+        } catch (MeshIo.FileTooLargeException error) {
+            assertEquals(8, error.maxBytes);
+            assertFalse(dest.exists());
+        } finally {
+            dest.delete();
+        }
+    }
+
+    @Test
     public void sizeHelper() {
         assertTrue(MeshIo.exceedsLimit(MeshIo.MAX_FILE_BYTES + 1L, MeshIo.MAX_FILE_BYTES));
         assertFalse(MeshIo.exceedsLimit(MeshIo.MAX_FILE_BYTES, MeshIo.MAX_FILE_BYTES));
+        assertTrue(MeshIo.effectiveMaxFileBytes() > 0);
+        assertTrue(MeshIo.effectiveMaxFileBytes() <= MeshIo.MAX_FILE_BYTES);
+        assertEquals(4, MeshIo.chunkCount(2000, 600));
+        assertEquals(1, MeshIo.chunkCount(600, 600));
     }
 }

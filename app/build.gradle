@@ -35,8 +35,8 @@ android {
         applicationId "com.devil1716.bluetoothmanet"
         minSdk 21
         targetSdk 34
-        versionCode 28
-        versionName "1.4.2"
+        versionCode 29
+        versionName "1.4.3"
 
         testInstrumentationRunner "androidx.test.junit.AndroidJUnitRunner"
     }
@@ -59,6 +59,7 @@ android {
         release {
             debuggable false
             minifyEnabled false
+            shrinkResources false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
             if (hasReleaseSigning) {
                 signingConfig signingConfigs.release

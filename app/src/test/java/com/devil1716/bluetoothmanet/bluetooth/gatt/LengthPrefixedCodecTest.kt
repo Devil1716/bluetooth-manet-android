@@ -23,6 +23,22 @@ class LengthPrefixedCodecTest {
     }
 
     @Test
+    fun `assembles a file-sized packet from 20-byte GATT writes`() {
+        val payload = ByteArray(1500) { it.toByte() }
+        val encoded = LengthPrefixedCodec.encode(payload)
+        val assembler = LengthPrefixedAssembler()
+        var assembled: List<ByteArray> = emptyList()
+        var offset = 0
+        while (offset < encoded.size) {
+            val end = minOf(encoded.size, offset + 20)
+            assembled = assembler.offer(encoded.copyOfRange(offset, end))
+            offset = end
+        }
+        assertEquals(1, assembled.size)
+        assertArrayEquals(payload, assembled[0])
+    }
+
+    @Test
     fun `chunks without boxing preserve bytes`() {
         val payload = ByteArray(50) { it.toByte() }
         val parts = LengthPrefixedCodec.chunks(payload, 20)

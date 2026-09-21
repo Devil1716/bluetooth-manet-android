@@ -19,10 +19,21 @@ class PacketSignerTest {
     }
 
     @Test
-    fun `file hash changes when a byte is flipped`() {
+    fun `file hash matches byte array and detects a flip`() {
         val original = byteArrayOf(1, 2, 3, 4)
         val tampered = byteArrayOf(1, 2, 9, 4)
         assertEquals(MeshIntegrity.sha256Hex(original).length, 64)
         assertFalse(MeshIntegrity.sha256Hex(original).equals(MeshIntegrity.sha256Hex(tampered), ignoreCase = true))
+        val file = Files.createTempFile("mesh-hash", ".bin").toFile()
+        try {
+            Files.write(file.toPath(), original)
+            assertEquals(MeshIntegrity.sha256Hex(original), MeshIntegrity.sha256Hex(file))
+            assertEquals(
+                MeshIntegrity.sha256Hex(original),
+                MeshIntegrity.sha256Hex(original, 0, original.size)
+            )
+        } finally {
+            file.delete()
+        }
     }
 }

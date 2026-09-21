@@ -33,6 +33,29 @@ public final class MeshFileStore {
     }
 
     public static File save(Context context, String fileName, byte[] bytes) throws IOException {
+        File file = uniqueReceivedFile(context, fileName);
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(bytes);
+        }
+        return file;
+    }
+
+    public static File save(Context context, String fileName, File source) throws IOException {
+        File file = uniqueReceivedFile(context, fileName);
+        MeshIo.copyFile(source, file);
+        return file;
+    }
+
+    public static File outgoingDir(Context context) {
+        return new File(context.getFilesDir(), "outgoing");
+    }
+
+    public static File incomingScratch(Context context, String transferId) {
+        File directory = new File(context.getCacheDir(), "incoming");
+        return new File(directory, (transferId == null ? "file" : transferId) + ".bin");
+    }
+
+    private static File uniqueReceivedFile(Context context, String fileName) throws IOException {
         File directory = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "received");
         if (!directory.exists() && !directory.mkdirs()) {
             throw new IOException("Could not create " + directory.getAbsolutePath());
@@ -41,8 +64,13 @@ public final class MeshFileStore {
                 ? "mesh-file.bin"
                 : fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
         File file = new File(directory, safeName);
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            output.write(bytes);
+        int suffix = 1;
+        int dot = safeName.lastIndexOf('.');
+        String stem = dot > 0 ? safeName.substring(0, dot) : safeName;
+        String ext = dot > 0 ? safeName.substring(dot) : "";
+        while (file.exists()) {
+            suffix++;
+            file = new File(directory, stem + "-" + suffix + ext);
         }
         return file;
     }

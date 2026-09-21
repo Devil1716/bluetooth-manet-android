@@ -74,20 +74,26 @@ public class MainActivity extends AppCompatActivity {
             registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
                 if (uri == null) return;
                 databaseExecutor.execute(() -> {
+                    File cache = new File(getCacheDir(), "outgoing-" + System.nanoTime() + ".bin");
                     try (InputStream input = getContentResolver().openInputStream(uri)) {
                         if (input == null) throw new java.io.IOException("missing");
-                        byte[] bytes = MeshIo.readBounded(input, MeshIo.MAX_FILE_BYTES);
+                        MeshIo.copyBounded(input, cache, MeshIo.effectiveMaxFileBytes());
                         String name = queryDisplayName(uri);
                         syncNodeId();
                         boolean sent = MeshService.sendFile(MainActivity.this,
-                                destinationInput.getText().toString(), name, bytes);
+                                destinationInput.getText().toString(), name, cache);
                         String result = sent
                                 ? "Signed file transfer queued: " + name
                                 : "File transfer failed. Start mesh and check the event log.";
                         runOnUiThread(() -> fileProgressView.setText(result));
                     } catch (MeshIo.FileTooLargeException tooLarge) {
+                        cache.delete();
                         runOnUiThread(() -> fileProgressView.setText("This file is larger than 2 MB."));
+                    } catch (OutOfMemoryError oom) {
+                        cache.delete();
+                        runOnUiThread(() -> fileProgressView.setText("This file is too large for this phone to send."));
                     } catch (Exception e) {
+                        cache.delete();
                         runOnUiThread(() -> fileProgressView.setText("Couldn't open the file. Pick it again."));
                     }
                 });

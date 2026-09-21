@@ -15,4 +15,11 @@ public interface MeshLinkBridge {
      * radio address instead of by node ID.
      */
     default void noteVerifiedNodeId(String peerId, String peerNodeId) { }
+
+    /**
+     * Blocks the caller until each live BLE link has drained enough of its
+     * write queue that another application packet will not OOM a low-end phone.
+     * RFCOMM-only implementations can leave this empty; socket writes already back-pressure.
+     */
+    default void awaitSendWindow() { }
 }

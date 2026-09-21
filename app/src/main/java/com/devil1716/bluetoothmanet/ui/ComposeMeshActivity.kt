@@ -75,7 +75,7 @@ class ComposeMeshActivity : ComponentActivity() {
                 try {
                     val size = queryFileSize(uri)
                     val name = queryDisplayName(uri)
-                    if (size > 0 && MeshIo.exceedsLimit(size, MeshIo.MAX_FILE_BYTES)) {
+                    if (size > 0 && MeshIo.exceedsLimit(size, MeshIo.effectiveMaxFileBytes())) {
                         postFileError(name, "This file is larger than 2 MB. Choose a smaller one. Nothing was sent.")
                         return@execute
                     }
@@ -90,25 +90,26 @@ class ComposeMeshActivity : ComponentActivity() {
                             )
                         )
                     }
-                    contentResolver.openInputStream(uri).use { input ->
+                    val cache = File(cacheDir, "outgoing-${System.nanoTime()}.bin")
+                    val copied = contentResolver.openInputStream(uri).use { input ->
                         if (input == null) throw java.io.IOException("missing")
-                        val bytes = MeshIo.readBounded(input, MeshIo.MAX_FILE_BYTES)
-                        startMeshService()
-                        val sent = MeshService.sendFile(this, destination, name, bytes)
-                        postOnUi {
-                            viewModel.setFileTransfer(
-                                FileTransferUi(
-                                    phase = if (sent) FileTransferPhase.SENDING else FileTransferPhase.FAILED,
-                                    fileName = name,
-                                    sizeLabel = formatByteSize(bytes.size.toLong()),
-                                    completed = 0,
-                                    total = 0,
-                                    error = if (sent) "" else "Connection lost. The file is still on your phone — try again when someone is nearby."
-                                )
+                        MeshIo.copyBounded(input, cache, MeshIo.effectiveMaxFileBytes())
+                    }
+                    startMeshService()
+                    val sent = MeshService.sendFile(this, destination, name, cache)
+                    postOnUi {
+                        viewModel.setFileTransfer(
+                            FileTransferUi(
+                                phase = if (sent) FileTransferPhase.SENDING else FileTransferPhase.FAILED,
+                                fileName = name,
+                                sizeLabel = formatByteSize(copied.toLong()),
+                                completed = 0,
+                                total = 0,
+                                error = if (sent) "" else "Connection lost. The file is still on your phone — try again when someone is nearby."
                             )
-                            if (sent) {
-                                viewModel.onMeshStatus(null, null, "Signed file transfer queued: $name")
-                            }
+                        )
+                        if (sent) {
+                            viewModel.onMeshStatus(null, null, "Signed file transfer queued: $name")
                         }
                     }
                 } catch (_: MeshIo.FileTooLargeException) {

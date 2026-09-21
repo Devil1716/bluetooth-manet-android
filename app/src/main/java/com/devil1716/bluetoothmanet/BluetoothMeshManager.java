@@ -21,6 +21,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,7 +31,6 @@ import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 
 public class BluetoothMeshManager {
@@ -51,7 +51,9 @@ public class BluetoothMeshManager {
     private final Context appContext;
     private final Listener listener;
     private final BluetoothAdapter adapter;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ExecutorService executor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 8, 30L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<Runnable>(64));
     private final ConcurrentHashMap<String, BluetoothSocket> sockets = new ConcurrentHashMap<>();
     private final Set<String> connectingAddresses = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final ConcurrentHashMap<String, String> peerNodeIds = new ConcurrentHashMap<>();
@@ -71,6 +73,10 @@ public class BluetoothMeshManager {
     private MeshLinkBridge extraLinks;
     private static final long SEEN_TTL_MS = 10 * 60 * 1000L;
     private static final long PENDING_FLUSH_MIN_INTERVAL_MS = 8_000L;
+    private static final long FILE_BUFFER_TTL_MS = 10 * 60 * 1000L;
+    private static final int MAX_SEEN_FILE_CHUNKS = 4_096;
+    private static final int MAX_OUTGOING_FILES = 3;
+    private static final int MAX_MISSING_INDEXES = 48;
     private volatile long lastPendingFlushAt;
 
     private volatile boolean accepting;
@@ -186,6 +192,7 @@ public class BluetoothMeshManager {
         sockets.clear();
         connectingAddresses.clear();
         peerNodeIds.clear();
+        discardFileState();
         publishConnections();
         executor.shutdownNow();
     }
@@ -385,7 +392,10 @@ public class BluetoothMeshManager {
                     MeshDelivery.exceptAddress(false, fromAddress));
             if (forwarded == 0 && !broadcast) storePending(message);
         } catch (IllegalArgumentException e) {
-            listener.onLog("Ignored malformed payload: " + payload);
+            listener.onLog("Ignored malformed payload.");
+        } catch (OutOfMemoryError e) {
+            listener.onLog("Dropped a packet because this phone is low on memory.");
+            MeshDiagnostics.record("transfer", "rx_oom");
         }
     }
 
@@ -473,8 +483,29 @@ public class BluetoothMeshManager {
     }
 
     public boolean sendFile(String destination, String fileName, byte[] contents) {
-        String trimmedDestination = destination == null ? "" : destination.trim().toUpperCase();
         if (contents == null || contents.length == 0) {
+            listener.onLog("File is empty.");
+            return false;
+        }
+        File temp = new File(MeshFileStore.outgoingDir(appContext), "tmp-" + System.nanoTime() + ".bin");
+        try {
+            MeshFileStore.outgoingDir(appContext).mkdirs();
+            try (java.io.FileOutputStream output = new java.io.FileOutputStream(temp)) {
+                output.write(contents);
+            }
+        } catch (IOException error) {
+            listener.onLog("Couldn't prepare the file to send.");
+            temp.delete();
+            return false;
+        }
+        boolean sent = sendFile(destination, fileName, temp);
+        if (temp.exists()) temp.delete();
+        return sent;
+    }
+
+    public boolean sendFile(String destination, String fileName, File source) {
+        String trimmedDestination = destination == null ? "" : destination.trim().toUpperCase();
+        if (source == null || !source.isFile() || source.length() <= 0) {
             listener.onLog("File is empty.");
             return false;
         }
@@ -482,58 +513,85 @@ public class BluetoothMeshManager {
             listener.onLog("Destination is required to send a file.");
             return false;
         }
-        if (contents.length > MeshIo.MAX_FILE_BYTES) {
-            listener.onLog("File is larger than 2 MB. Choose a smaller file.");
+        int maxBytes = MeshIo.effectiveMaxFileBytes();
+        if (source.length() > maxBytes) {
+            listener.onLog("File is larger than " + MeshIo.MAX_FILE_LABEL + ". Choose a smaller file.");
             return false;
         }
         if (!hasAnyPeers()) {
             listener.onLog("No active mesh peers. Files are sent over BLE or RFCOMM once a phone is linked.");
             return false;
         }
+        pruneOutgoingFiles();
         String safeName = fileName == null ? "file.bin" : fileName.replace("|", "_").replaceAll("[^a-zA-Z0-9._-]", "_");
-        int total = (contents.length + FilePacket.CHUNK_SIZE - 1) / FilePacket.CHUNK_SIZE;
+        int size = (int) source.length();
+        int total = MeshIo.chunkCount(size, FilePacket.CHUNK_SIZE);
         String id = UUID.randomUUID().toString();
-        String fileSha = MeshIntegrity.sha256Hex(contents);
-        FilePacket meta = FilePacket.meta(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
-                safeName, total, contents.length, fileSha,
-                signer.sign(MeshIntegrity.fileMetaCanon(id, myNodeId, trimmedDestination, safeName, total, contents.length, fileSha)));
-        OutgoingFile outgoing = new OutgoingFile(meta);
-        outgoingFiles.put(id, outgoing);
-        forwardMessage(signedHello(), null);
-        listener.onLog("Sending signed file " + safeName + " (" + contents.length + " bytes, " + total + " chunks).");
-        int delivered = 0;
-        int chunksDelivered = 0;
-        if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
-        try { Thread.sleep(40); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-        if (forwardBytes(meta.toBytes(), null) > 0) delivered++;
-        for (int index = 0; index < total; index++) {
-            int start = index * FilePacket.CHUNK_SIZE;
-            int end = Math.min(contents.length, start + FilePacket.CHUNK_SIZE);
-            byte[] chunk = java.util.Arrays.copyOfRange(contents, start, end);
-            String chunkSha = MeshIntegrity.sha256Hex(chunk);
-            String data = android.util.Base64.encodeToString(chunk, android.util.Base64.NO_WRAP);
-            FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, id, myNodeId, trimmedDestination,
-                    ManetMessage.DEFAULT_TTL, safeName, index, total, contents.length, chunkSha, data,
-                    signer.sign(MeshIntegrity.fileChunkCanon(id, myNodeId, trimmedDestination, index, total, chunkSha)));
-            outgoing.chunks.add(packet);
-            if (forwardBytes(packet.toBytes(), null) > 0) {
-                delivered++;
-                chunksDelivered++;
+        File owned = new File(MeshFileStore.outgoingDir(appContext), id + ".bin");
+        try {
+            if (!owned.getAbsolutePath().equals(source.getAbsolutePath())) {
+                MeshIo.moveOrCopy(source, owned);
             }
-            listener.onFileProgress(id, index + 1, total, safeName);
-            if (index < total - 1) {
-                try { Thread.sleep(35); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-            }
+        } catch (IOException | OutOfMemoryError error) {
+            listener.onLog("Couldn't prepare the file to send.");
+            MeshDiagnostics.record("transfer", "outgoing_copy_failed");
+            owned.delete();
+            return false;
         }
-        boolean sent = chunksDelivered > 0;
-        listener.onLog(sent
-                ? "File " + safeName + " handed to nearby phones. Delivery is not confirmed yet."
-                : "File " + safeName + " could not be written to any peer.");
-        ManetMessage fileNote = new ManetMessage(id, myNodeId, trimmedDestination,
-                ManetMessage.DEFAULT_TTL, "File: " + safeName);
-        listener.onMessageStatusChanged(fileNote, MessageStatus.SENDING);
-        listener.onMessageStatusChanged(fileNote, sent ? MessageStatus.SENT : MessageStatus.FAILED);
-        return sent;
+        try {
+            String fileSha = MeshIntegrity.sha256Hex(owned);
+            FilePacket meta = FilePacket.meta(id, myNodeId, trimmedDestination, ManetMessage.DEFAULT_TTL,
+                    safeName, total, size, fileSha,
+                    signer.sign(MeshIntegrity.fileMetaCanon(id, myNodeId, trimmedDestination, safeName, total, size, fileSha)));
+            OutgoingFile outgoing = new OutgoingFile(meta, owned, size);
+            outgoingFiles.put(id, outgoing);
+            forwardMessage(signedHello(), null);
+            listener.onLog("Sending signed file " + safeName + " (" + size + " bytes, " + total + " chunks).");
+            awaitSendWindow();
+            int chunksDelivered = 0;
+            forwardBytes(meta.toBytes(), null);
+            awaitSendWindow();
+            forwardBytes(meta.toBytes(), null);
+            byte[] scratch = new byte[FilePacket.CHUNK_SIZE];
+            try (RandomAccessFile raf = new RandomAccessFile(owned, "r")) {
+                for (int index = 0; index < total; index++) {
+                    if (stopped) return false;
+                    awaitSendWindow();
+                    int length = MeshIo.readChunk(raf, scratch, index, FilePacket.CHUNK_SIZE, size);
+                    if (length <= 0) break;
+                    String chunkSha = MeshIntegrity.sha256Hex(scratch, 0, length);
+                    String data = android.util.Base64.encodeToString(scratch, 0, length, android.util.Base64.NO_WRAP);
+                    FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, id, myNodeId, trimmedDestination,
+                            ManetMessage.DEFAULT_TTL, safeName, index, total, size, chunkSha, data,
+                            signer.sign(MeshIntegrity.fileChunkCanon(id, myNodeId, trimmedDestination, index, total, chunkSha)));
+                    if (forwardBytes(packet.toBytes(), null) > 0) chunksDelivered++;
+                    listener.onFileProgress(id, index + 1, total, safeName);
+                }
+            }
+            boolean sent = chunksDelivered > 0;
+            listener.onLog(sent
+                    ? "File " + safeName + " handed to nearby phones. Delivery is not confirmed yet."
+                    : "File " + safeName + " could not be written to any peer.");
+            ManetMessage fileNote = new ManetMessage(id, myNodeId, trimmedDestination,
+                    ManetMessage.DEFAULT_TTL, "File: " + safeName);
+            listener.onMessageStatusChanged(fileNote, MessageStatus.SENDING);
+            listener.onMessageStatusChanged(fileNote, sent ? MessageStatus.SENT : MessageStatus.FAILED);
+            if (!sent) {
+                outgoingFiles.remove(id);
+                owned.delete();
+            }
+            return sent;
+        } catch (IOException | OutOfMemoryError error) {
+            listener.onLog("This phone ran out of memory sending the file. Try a smaller one.");
+            MeshDiagnostics.record("transfer", "send_failed");
+            outgoingFiles.remove(id);
+            owned.delete();
+            return false;
+        }
+    }
+
+    private void awaitSendWindow() {
+        if (extraLinks != null) extraLinks.awaitSendWindow();
     }
 
     private int forwardBytes(byte[] bytes, String exceptAddress) {
@@ -630,25 +688,42 @@ public class BluetoothMeshManager {
             maybeRelayFile(packet, fromAddress);
             return;
         }
-        byte[] raw = android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT);
+        byte[] raw;
+        try {
+            raw = android.util.Base64.decode(packet.data, android.util.Base64.DEFAULT);
+        } catch (IllegalArgumentException | OutOfMemoryError error) {
+            listener.onLog("Dropped unreadable file chunk " + packet.index + " of " + packet.fileName);
+            return;
+        }
+        if (raw.length > FilePacket.CHUNK_SIZE) {
+            listener.onLog("Dropped oversized file chunk " + packet.index + " of " + packet.fileName);
+            return;
+        }
         if (!MeshIntegrity.sha256Hex(raw).equalsIgnoreCase(packet.digest)) {
             listener.onLog("Dropped tampered file chunk " + packet.index + " of " + packet.fileName);
-            seenFileChunks.add(chunkKey);
+            rememberFileChunk(chunkKey);
             return;
         }
         if (!verifyFileChunk(packet)) {
             listener.onLog("Dropped file chunk with invalid signature: " + packet.fileName);
-            seenFileChunks.add(chunkKey);
+            rememberFileChunk(chunkKey);
             return;
         }
-        if (!seenFileChunks.add(chunkKey)) {
+        if (!rememberFileChunk(chunkKey)) {
             maybeRelayFile(packet, fromAddress);
             return;
         }
         FileTransferBuffer buffer = bufferFor(packet);
-        buffer.chunks.put(packet.index, raw);
+        try {
+            buffer.reassembly.putChunk(packet.index, raw);
+        } catch (IOException | OutOfMemoryError error) {
+            listener.onLog("Couldn't store a file chunk. Storage may be full.");
+            MeshDiagnostics.record("transfer", "chunk_write_failed");
+            return;
+        }
         buffer.lastUpdate = System.currentTimeMillis();
-        listener.onFileProgress(packet.id, buffer.chunks.size(), Math.max(packet.total, buffer.total), packet.fileName);
+        listener.onFileProgress(packet.id, buffer.reassembly.receivedCount(),
+                Math.max(packet.total, buffer.reassembly.total()), packet.fileName);
         scheduleFileRetry(packet.id);
         tryCompleteFile(buffer, packet);
         maybeRelayFile(packet, fromAddress);
@@ -666,13 +741,27 @@ public class BluetoothMeshManager {
             listener.onLog("Rejected tampered file header for " + packet.fileName);
             return;
         }
+        if (packet.size > MeshIo.effectiveMaxFileBytes()) {
+            listener.onLog("Rejected file " + packet.fileName + ": larger than this phone can receive.");
+            buffer.reassembly.discard();
+            fileBuffers.remove(packet.id);
+            return;
+        }
+        try {
+            if (!buffer.reassembly.setMeta(packet.total, packet.size)) {
+                listener.onLog("Rejected file header with an invalid size for " + packet.fileName);
+                return;
+            }
+        } catch (IOException | OutOfMemoryError error) {
+            listener.onLog("Couldn't reserve space for " + packet.fileName);
+            MeshDiagnostics.record("transfer", "meta_open_failed");
+            return;
+        }
         buffer.pendingMeta = null;
         buffer.fileName = packet.fileName;
         buffer.source = packet.source;
         buffer.destination = packet.destination;
         buffer.fileSha = packet.digest;
-        buffer.total = packet.total;
-        buffer.size = packet.size;
         buffer.metaOk = true;
         listener.onLog("Authenticated file header " + packet.fileName + " sha256=" + packet.digest.substring(0, Math.min(12, packet.digest.length())));
         scheduleFileRetry(packet.id);
@@ -682,52 +771,71 @@ public class BluetoothMeshManager {
 
     private void handleFileRequest(FilePacket packet, String fromAddress) {
         OutgoingFile outgoing = outgoingFiles.get(packet.id);
-        if (outgoing == null) {
+        if (outgoing == null || outgoing.source == null || !outgoing.source.isFile()) {
             if (packet.ttl > 1) forwardBytes(packet.decrementedTtl().toBytes(), fromAddress);
             return;
         }
         listener.onLog("Resending missing chunks for " + outgoing.meta.fileName + ": " + packet.requestIndexes);
+        awaitSendWindow();
         forwardBytes(outgoing.meta.toBytes(), null);
-        for (String item : packet.requestIndexes.split(",")) {
-            if (item.trim().isEmpty()) continue;
-            try {
-                int index = Integer.parseInt(item.trim());
-                if (index >= 0 && index < outgoing.chunks.size()) {
-                    forwardBytes(outgoing.chunks.get(index).toBytes(), null);
+        byte[] scratch = new byte[FilePacket.CHUNK_SIZE];
+        try (RandomAccessFile raf = new RandomAccessFile(outgoing.source, "r")) {
+            int resent = 0;
+            for (String item : packet.requestIndexes.split(",")) {
+                if (item.trim().isEmpty()) continue;
+                if (resent >= MAX_MISSING_INDEXES) break;
+                try {
+                    int index = Integer.parseInt(item.trim());
+                    if (index < 0 || index >= outgoing.meta.total) continue;
+                    awaitSendWindow();
+                    int length = MeshIo.readChunk(raf, scratch, index, FilePacket.CHUNK_SIZE, outgoing.size);
+                    if (length <= 0) continue;
+                    String chunkSha = MeshIntegrity.sha256Hex(scratch, 0, length);
+                    String data = android.util.Base64.encodeToString(scratch, 0, length, android.util.Base64.NO_WRAP);
+                    FilePacket chunk = new FilePacket(FilePacket.Kind.CHUNK, outgoing.meta.id, outgoing.meta.source,
+                            outgoing.meta.destination, ManetMessage.DEFAULT_TTL, outgoing.meta.fileName, index,
+                            outgoing.meta.total, outgoing.size, chunkSha, data,
+                            signer.sign(MeshIntegrity.fileChunkCanon(outgoing.meta.id, outgoing.meta.source,
+                                    outgoing.meta.destination, index, outgoing.meta.total, chunkSha)));
+                    forwardBytes(chunk.toBytes(), null);
+                    resent++;
+                } catch (NumberFormatException ignored) {
+                    MeshDiagnostics.record("transfer", "bad_chunk_index");
                 }
-            } catch (NumberFormatException ignored) {
-                MeshDiagnostics.record("transfer", "bad_chunk_index");
             }
+        } catch (IOException | OutOfMemoryError error) {
+            MeshDiagnostics.record("transfer", "retry_read_failed");
         }
     }
 
     private FileTransferBuffer bufferFor(FilePacket packet) {
+        pruneStaleFileBuffers();
         FileTransferBuffer buffer = fileBuffers.get(packet.id);
         if (buffer != null) return buffer;
-        FileTransferBuffer created = new FileTransferBuffer();
+        FileTransferBuffer created = new FileTransferBuffer(
+                new FileReassembly(MeshFileStore.incomingScratch(appContext, packet.id)));
         FileTransferBuffer existing = fileBuffers.putIfAbsent(packet.id, created);
-        return existing == null ? created : existing;
+        if (existing != null) {
+            created.reassembly.discard();
+            return existing;
+        }
+        return created;
     }
 
     private void tryCompleteFile(FileTransferBuffer buffer, FilePacket packet) {
-        if (!packet.isFor(myNodeId) || !buffer.metaOk || buffer.total <= 0 || buffer.chunks.size() != buffer.total) {
+        if (!packet.isFor(myNodeId) || !buffer.metaOk || !buffer.reassembly.isComplete()) {
             return;
         }
         try {
-            java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
-            for (int i = 0; i < buffer.total; i++) {
-                byte[] chunk = buffer.chunks.get(i);
-                if (chunk == null) return;
-                output.write(chunk);
-            }
-            byte[] assembled = output.toByteArray();
-            String actual = MeshIntegrity.sha256Hex(assembled);
-            if (!actual.equalsIgnoreCase(buffer.fileSha)) {
+            if (!buffer.reassembly.matchesSha256(buffer.fileSha)) {
                 listener.onLog("Rejected file " + buffer.fileName + ": content hash mismatch (tampered or corrupt).");
+                buffer.reassembly.discard();
                 fileBuffers.remove(packet.id);
                 return;
             }
-            java.io.File saved = MeshFileStore.save(appContext, buffer.fileName, assembled);
+            File assembled = buffer.reassembly.finish();
+            File saved = MeshFileStore.save(appContext, buffer.fileName, assembled);
+            assembled.delete();
             fileBuffers.remove(packet.id);
             listener.onLog("Saved verified file to " + saved.getAbsolutePath());
             listener.onFileReceived(buffer.fileName, saved.getAbsolutePath());
@@ -758,18 +866,13 @@ public class BluetoothMeshManager {
 
     private void requestMissingChunks(String transferId) {
         FileTransferBuffer buffer = fileBuffers.get(transferId);
-        if (buffer == null || !buffer.metaOk || buffer.total <= 0) return;
+        if (buffer == null || !buffer.metaOk || buffer.reassembly.total() <= 0) return;
         if (!buffer.destination.equalsIgnoreCase(myNodeId) && !"ALL".equalsIgnoreCase(buffer.destination)) return;
-        StringBuilder missing = new StringBuilder();
-        for (int i = 0; i < buffer.total; i++) {
-            if (!buffer.chunks.containsKey(i)) {
-                if (missing.length() > 0) missing.append(',');
-                missing.append(i);
-            }
-        }
-        if (missing.length() == 0) return;
-        FilePacket request = FilePacket.request(transferId, myNodeId, buffer.source, ManetMessage.DEFAULT_TTL, missing.toString());
+        String missing = buffer.reassembly.missingIndexes(MAX_MISSING_INDEXES);
+        if (missing.isEmpty()) return;
+        FilePacket request = FilePacket.request(transferId, myNodeId, buffer.source, ManetMessage.DEFAULT_TTL, missing);
         listener.onLog("Requesting missing file chunks: " + missing);
+        awaitSendWindow();
         forwardBytes(request.toBytes(), null);
         handler.postDelayed(() -> requestMissingChunks(transferId), 4000);
     }
@@ -813,23 +916,80 @@ public class BluetoothMeshManager {
     private enum AuthResult { OK, UNKNOWN, TAMPERED }
 
     private static class FileTransferBuffer {
-        final Map<Integer, byte[]> chunks = new ConcurrentHashMap<>();
+        final FileReassembly reassembly;
         String fileName = "";
         String source = "";
         String destination = "";
         String fileSha = "";
-        int total;
-        int size;
         boolean metaOk;
         long lastUpdate;
         FilePacket pendingMeta;
         Runnable retry;
+
+        FileTransferBuffer(FileReassembly reassembly) {
+            this.reassembly = reassembly;
+            this.lastUpdate = System.currentTimeMillis();
+        }
     }
 
     private static class OutgoingFile {
         final FilePacket meta;
-        final List<FilePacket> chunks = new ArrayList<>();
-        OutgoingFile(FilePacket meta) { this.meta = meta; }
+        final File source;
+        final int size;
+        final long createdAt = System.currentTimeMillis();
+        OutgoingFile(FilePacket meta, File source, int size) {
+            this.meta = meta;
+            this.source = source;
+            this.size = size;
+        }
+    }
+
+    private boolean rememberFileChunk(String chunkKey) {
+        if (!seenFileChunks.add(chunkKey)) return false;
+        if (seenFileChunks.size() > MAX_SEEN_FILE_CHUNKS) {
+            seenFileChunks.clear();
+            seenFileChunks.add(chunkKey);
+        }
+        return true;
+    }
+
+    private void pruneStaleFileBuffers() {
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, FileTransferBuffer> entry : fileBuffers.entrySet()) {
+            FileTransferBuffer buffer = entry.getValue();
+            if (now - buffer.lastUpdate < FILE_BUFFER_TTL_MS) continue;
+            if (buffer.retry != null) handler.removeCallbacks(buffer.retry);
+            buffer.reassembly.discard();
+            fileBuffers.remove(entry.getKey(), buffer);
+        }
+    }
+
+    private void pruneOutgoingFiles() {
+        if (outgoingFiles.size() < MAX_OUTGOING_FILES) return;
+        String oldestId = null;
+        long oldest = Long.MAX_VALUE;
+        for (Map.Entry<String, OutgoingFile> entry : outgoingFiles.entrySet()) {
+            if (entry.getValue().createdAt < oldest) {
+                oldest = entry.getValue().createdAt;
+                oldestId = entry.getKey();
+            }
+        }
+        if (oldestId == null) return;
+        OutgoingFile removed = outgoingFiles.remove(oldestId);
+        if (removed != null && removed.source != null) removed.source.delete();
+    }
+
+    private void discardFileState() {
+        for (FileTransferBuffer buffer : fileBuffers.values()) {
+            if (buffer.retry != null) handler.removeCallbacks(buffer.retry);
+            buffer.reassembly.discard();
+        }
+        fileBuffers.clear();
+        for (OutgoingFile outgoing : outgoingFiles.values()) {
+            if (outgoing.source != null) outgoing.source.delete();
+        }
+        outgoingFiles.clear();
+        seenFileChunks.clear();
     }
 
     private int forwardMessage(ManetMessage message, String exceptAddress) {

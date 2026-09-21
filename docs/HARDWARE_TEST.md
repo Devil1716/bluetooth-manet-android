@@ -24,7 +24,7 @@ Record: device model, Android version, whether battery saver / OEM “sleeping a
 
 - [ ] BLE only (no classic pairing) between two Android phones.
 - [ ] RFCOMM / Windows node still exchanges a signed chat line if you still support that path.
-- [ ] Large file: progress updates; cancel/retry if offered; incomplete transfer does not show as fully received.
+- [ ] Large file on a low-RAM phone: progress updates; the app stays up; incomplete transfer does not show as fully received.
 
 ## Process and OS
 

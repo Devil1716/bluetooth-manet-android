@@ -51,6 +51,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private BleGattTransport bleTransport;
     private AppDatabase database;
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService transferExecutor = Executors.newSingleThreadExecutor();
     private boolean receiverRegistered;
     private boolean foregroundReady;
     private String nodeId = "NODE";
@@ -59,6 +60,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private String pendingSendName;
     private java.io.File pendingSendCache;
     private int pendingSendAttempts;
+    private volatile boolean pendingSendBusy;
     private final Runnable pendingSendRetry = new Runnable() {
         @Override public void run() { processPendingFileSend(false); }
     };
@@ -146,6 +148,9 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             @Override public void noteVerifiedNodeId(String peerId, String peerNodeId) {
                 if (bleTransport != null) bleTransport.noteVerifiedNodeId(peerId, peerNodeId);
             }
+            @Override public void awaitSendWindow() {
+                if (bleTransport != null) bleTransport.awaitSendWindow();
+            }
         });
         activeManager = manager;
         database = AppDatabase.getInstance(this);
@@ -193,10 +198,13 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             }
         }
         if (intent != null && intent.hasExtra("send_file_cache")) {
-            queuePendingFileSend(
-                    intent.getStringExtra("send_file_dest"),
-                    intent.getStringExtra("send_file_name"),
-                    new java.io.File(intent.getStringExtra("send_file_cache")));
+            String cachePath = intent.getStringExtra("send_file_cache");
+            if (cachePath != null && !cachePath.trim().isEmpty()) {
+                queuePendingFileSend(
+                        intent.getStringExtra("send_file_dest"),
+                        intent.getStringExtra("send_file_name"),
+                        new java.io.File(cachePath));
+            }
         }
         processPendingFileSend(false);
         ensureTransportReady();
@@ -224,18 +232,25 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     }
 
     public static boolean sendFile(android.content.Context context, String destination, String fileName, byte[] contents) {
-        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
-                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return false;
-        if (contents == null || contents.length == 0 || contents.length > MeshIo.MAX_FILE_BYTES) return false;
-        BluetoothMeshManager current = activeManager;
-        if (current != null && current.sendFile(destination, fileName, contents)) {
-            return true;
-        }
-        java.io.File cache = new java.io.File(context.getCacheDir(), "pending-mesh-send.bin");
+        if (contents == null || contents.length == 0 || contents.length > MeshIo.effectiveMaxFileBytes()) return false;
+        java.io.File cache = new java.io.File(context.getCacheDir(), "pending-mesh-send-" + System.nanoTime() + ".bin");
         try (java.io.FileOutputStream output = new java.io.FileOutputStream(cache)) {
             output.write(contents);
         } catch (java.io.IOException e) {
             return false;
+        }
+        return sendFile(context, destination, fileName, cache);
+    }
+
+    public static boolean sendFile(android.content.Context context, String destination, String fileName, java.io.File cache) {
+        if (Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(context,
+                Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return false;
+        if (cache == null || !cache.isFile() || cache.length() <= 0 || cache.length() > MeshIo.effectiveMaxFileBytes()) {
+            return false;
+        }
+        BluetoothMeshManager current = activeManager;
+        if (current != null && current.sendFile(destination, fileName, cache)) {
+            return true;
         }
         Intent intent = new Intent(context, MeshService.class)
                 .putExtra("send_file_cache", cache.getAbsolutePath())
@@ -251,26 +266,45 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         pendingSendName = fileName;
         pendingSendCache = cache;
         pendingSendAttempts = 0;
+        pendingSendBusy = false;
         handler.removeCallbacks(pendingSendRetry);
     }
 
     private void processPendingFileSend(boolean fromPeerEvent) {
         if (manager == null || pendingSendCache == null || !pendingSendCache.exists()) return;
         try {
-            byte[] bytes = MeshIo.readBounded(pendingSendCache, MeshIo.MAX_FILE_BYTES);
-            if (manager.sendFile(pendingSendDestination, pendingSendName, bytes)) {
+            transferExecutor.execute(() -> runPendingFileSend(fromPeerEvent));
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            MeshDiagnostics.record("transfer", "executor_rejected");
+        }
+    }
+
+    private void runPendingFileSend(boolean fromPeerEvent) {
+        java.io.File cache;
+        String dest;
+        String name;
+        synchronized (this) {
+            if (pendingSendBusy) return;
+            cache = pendingSendCache;
+            dest = pendingSendDestination;
+            name = pendingSendName;
+            if (cache == null || !cache.exists() || manager == null) return;
+            pendingSendBusy = true;
+        }
+        try {
+            if (manager.sendFile(dest, name, cache)) {
                 clearPendingFileSend(true);
                 return;
             }
-        } catch (MeshIo.FileTooLargeException tooLarge) {
-            status("This file is larger than 2 MB. Choose a smaller one. The original is still on your phone.");
+        } catch (OutOfMemoryError oom) {
+            status("This file is too large for this phone to send.");
+            MeshDiagnostics.record("transfer", "send_oom");
             clearPendingFileSend(false);
             return;
-        } catch (java.io.IOException e) {
-            status("Couldn't read the queued file. Pick it again.");
-            MeshDiagnostics.record("transfer", "queue_read_failed");
-            clearPendingFileSend(false);
-            return;
+        } finally {
+            synchronized (this) {
+                if (pendingSendCache != null) pendingSendBusy = false;
+            }
         }
         pendingSendAttempts++;
         if (pendingSendAttempts >= 20) {
@@ -279,7 +313,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
             return;
         }
         if (!fromPeerEvent) {
-            status("Waiting for mesh link to send " + pendingSendName + "...");
+            status("Waiting for mesh link to send " + name + "...");
         }
         handler.removeCallbacks(pendingSendRetry);
         handler.postDelayed(pendingSendRetry, 2000L);
@@ -287,13 +321,16 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
 
     private void clearPendingFileSend(boolean sent) {
         handler.removeCallbacks(pendingSendRetry);
-        if (pendingSendCache != null) {
-            pendingSendCache.delete();
+        synchronized (this) {
+            if (!sent && pendingSendCache != null) {
+                pendingSendCache.delete();
+            }
+            pendingSendCache = null;
+            pendingSendDestination = null;
+            pendingSendName = null;
+            pendingSendAttempts = 0;
+            pendingSendBusy = false;
         }
-        pendingSendCache = null;
-        pendingSendDestination = null;
-        pendingSendName = null;
-        pendingSendAttempts = 0;
         if (sent) {
             status("Signed file transfer started.");
         }
@@ -424,6 +461,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
         if (bleTransport != null) bleTransport.stop();
         if (manager != null) manager.stop();
         dbExecutor.shutdown();
+        transferExecutor.shutdown();
         MeshDiagnostics.record("lifecycle", "service_destroy");
         super.onDestroy();
     }

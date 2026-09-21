@@ -1,11 +1,11 @@
 package com.devil1716.bluetoothmanet.bluetooth.gatt
 
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 object LengthPrefixedCodec {
-    const val MAX_PAYLOAD_BYTES = 256 * 1024
+    /** One signed FILE packet is ~1.5 KB; keep a hard cap so a bad length cannot OOM. */
+    const val MAX_PAYLOAD_BYTES = 16 * 1024
 
     fun encode(payload: ByteArray): ByteArray {
         val buffer = ByteBuffer.allocate(4 + payload.size).order(ByteOrder.LITTLE_ENDIAN)
@@ -29,28 +29,49 @@ object LengthPrefixedCodec {
 }
 
 class LengthPrefixedAssembler(private val maxPayloadBytes: Int = LengthPrefixedCodec.MAX_PAYLOAD_BYTES) {
-    private val buffer = ByteArrayOutputStream()
+    private var buf = ByteArray(256)
+    private var size = 0
 
     fun offer(chunk: ByteArray): List<ByteArray> {
-        if (chunk.isNotEmpty()) buffer.write(chunk)
+        if (chunk.isNotEmpty()) {
+            ensureCapacity(size + chunk.size)
+            System.arraycopy(chunk, 0, buf, size, chunk.size)
+            size += chunk.size
+        }
         val complete = ArrayList<ByteArray>()
+        var offset = 0
         while (true) {
-            val data = buffer.toByteArray()
-            if (data.size < 4) return complete
-            val length = ByteBuffer.wrap(data, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            if (size - offset < 4) break
+            val length = ByteBuffer.wrap(buf, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
             if (length < 0 || length > maxPayloadBytes) {
-                buffer.reset()
+                reset()
                 throw IllegalArgumentException("Invalid BLE payload length $length")
             }
-            if (data.size < 4 + length) return complete
-            complete += data.copyOfRange(4, 4 + length)
-            buffer.reset()
-            val remaining = data.size - 4 - length
-            if (remaining > 0) buffer.write(data, 4 + length, remaining)
+            if (size - offset < 4 + length) break
+            complete += buf.copyOfRange(offset + 4, offset + 4 + length)
+            offset += 4 + length
         }
+        if (offset > 0) {
+            val remaining = size - offset
+            if (remaining > 0) System.arraycopy(buf, offset, buf, 0, remaining)
+            size = remaining
+        }
+        return complete
     }
 
     fun reset() {
-        buffer.reset()
+        size = 0
+    }
+
+    private fun ensureCapacity(needed: Int) {
+        val maxBuffered = maxPayloadBytes + 4 + 512
+        if (needed > maxBuffered) {
+            reset()
+            throw IllegalArgumentException("Invalid BLE payload length $needed")
+        }
+        if (needed <= buf.size) return
+        var cap = buf.size
+        while (cap < needed) cap *= 2
+        buf = buf.copyOf(minOf(cap, maxBuffered))
     }
 }

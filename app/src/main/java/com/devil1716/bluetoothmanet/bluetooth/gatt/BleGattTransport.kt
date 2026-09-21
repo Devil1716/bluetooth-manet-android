@@ -167,6 +167,39 @@ class BleGattTransport(
         return sent
     }
 
+    /**
+     * Parks the caller until every writable link has drained under
+     * [MAX_QUEUED_BYTES]. File send used to enqueue a whole 2 MB transfer at
+     * once (~hundreds of thousands of GATT fragments on a 23-byte MTU), which
+     * OOMs low-end phones.
+     */
+    fun awaitSendWindow() {
+        if (android.os.Looper.myLooper() == handler.looper) return
+        val deadline = System.currentTimeMillis() + SEND_WINDOW_TIMEOUT_MS
+        while (running && System.currentTimeMillis() < deadline) {
+            val gate = java.util.concurrent.CountDownLatch(1)
+            val crowded = java.util.concurrent.atomic.AtomicBoolean(true)
+            if (!handler.post {
+                    crowded.set(links.values.any { queuedBytes(it) >= MAX_QUEUED_BYTES })
+                    gate.countDown()
+                }
+            ) return
+            try {
+                if (!gate.await(1, java.util.concurrent.TimeUnit.SECONDS)) return
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+            if (!crowded.get()) return
+            try {
+                Thread.sleep(20)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+    }
+
     /** True only when a writable link exists; advertising peers cannot carry data. */
     fun hasPeers(): Boolean = links.values.any { it.hasAnyRole() }
 
@@ -636,10 +669,20 @@ class BleGattTransport(
     }
 
     private fun enqueue(link: GattLink, payload: ByteArray) {
+        if (queuedBytes(link) >= MAX_QUEUED_BYTES * 4) {
+            // Prefer a missing-chunk retry over an unbounded queue that kills the process.
+            return
+        }
         val encoded = LengthPrefixedCodec.encode(payload)
         val pieces = LengthPrefixedCodec.chunks(encoded, link.chunkSize())
         link.queue.addAll(pieces)
         if (!link.sending) drain(link)
+    }
+
+    private fun queuedBytes(link: GattLink): Int {
+        var sum = 0
+        for (chunk in link.queue) sum += chunk.size
+        return sum
     }
 
     @SuppressLint("MissingPermission")
@@ -721,6 +764,7 @@ class BleGattTransport(
         val link = links[address] ?: return
         if (link.hasAnyRole()) return
         handler.removeCallbacks(link.writeTimeout)
+        link.queue.clear()
         links.remove(address)
         // The peer keeps its slot in the roster: it may still be advertising
         // nearby, and dropping it here would make it flicker out of the list.
@@ -796,5 +840,9 @@ class BleGattTransport(
 
         /** How long to respect the tie-break before dialling anyway. */
         const val LINK_STALL_GRACE_MS = 15_000L
+
+        /** In-flight GATT payload per link. One FILE packet is ~1.5 KB. */
+        const val MAX_QUEUED_BYTES = 12 * 1024
+        const val SEND_WINDOW_TIMEOUT_MS = 30_000L
     }
 }
