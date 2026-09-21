@@ -53,6 +53,29 @@ public class FileReassemblyTest {
     }
 
     @Test
+    public void acceptsLegacySixHundredByteChunks() throws Exception {
+        byte[] payload = new byte[2000];
+        Arrays.fill(payload, (byte) 3);
+        int stride = 600;
+        int total = MeshIo.chunkCount(payload.length, stride);
+        File scratch = Files.createTempFile("mesh-rx-legacy", ".bin").toFile();
+        try (FileReassembly reassembly = new FileReassembly(scratch)) {
+            assertEquals(600, FileReassembly.inferStride(payload.length, total));
+            assertTrue(reassembly.setMeta(total, payload.length));
+            for (int i = 0; i < total; i++) {
+                int start = i * stride;
+                int end = Math.min(payload.length, start + stride);
+                assertTrue(reassembly.putChunk(i, Arrays.copyOfRange(payload, start, end)));
+            }
+            assertTrue(reassembly.isComplete());
+            assertTrue(reassembly.matchesSha256(
+                    com.devil1716.bluetoothmanet.crypto.MeshIntegrity.sha256Hex(payload)));
+        } finally {
+            scratch.delete();
+        }
+    }
+
+    @Test
     public void missingIndexesListsGaps() throws Exception {
         File scratch = Files.createTempFile("mesh-rx-gap", ".bin").toFile();
         byte[] chunk = new byte[FilePacket.CHUNK_SIZE];

@@ -30,7 +30,7 @@ Routing manager  (direct route when known, otherwise controlled flood)
 | No pairing or accounts | BLE links use the MANET service UUID; RFCOMM pairing is only for classic/Windows |
 | Automatic discovery | Connectable advertisements + manufacturer node ID; role split by node ID so two phones do not collide |
 | Compact framed payloads | Length-prefixed GATT stream, then the existing `TYPE\|ID\|SRC\|DEST\|TTL\|DATA` / `FILE\|...` application packets |
-| Fragmentation | GATT writes are split to `MTU - 3`; files are also chunked at 600 bytes and streamed from disk |
+| Fragmentation | GATT writes are split to `MTU - 3`; files are also chunked at 4096 bytes and streamed from disk |
 | TTL + dedup flood | Default TTL 7; seen-set for messages; HELLO presence is rate-limited and relayed |
 | Split horizon | Incoming BLE/RFCOMM address is excluded when forwarding |
 | Store-and-forward | `pending_messages` retries for 24 hours when a destination is offline |

@@ -93,7 +93,7 @@ public class MeshService extends Service implements BluetoothMeshManager.Listene
     private final Runnable announcer = new Runnable() {
         @Override public void run() {
             if (manager != null) manager.broadcastHello();
-            handler.postDelayed(this, 12_000L);
+            handler.postDelayed(this, 4_000L);
         }
     };
 

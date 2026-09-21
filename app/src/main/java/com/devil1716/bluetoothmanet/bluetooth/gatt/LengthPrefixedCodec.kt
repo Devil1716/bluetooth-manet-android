@@ -5,7 +5,7 @@ import java.nio.ByteOrder
 
 object LengthPrefixedCodec {
     /** One signed FILE packet is ~1.5 KB; keep a hard cap so a bad length cannot OOM. */
-    const val MAX_PAYLOAD_BYTES = 16 * 1024
+    const val MAX_PAYLOAD_BYTES = 24 * 1024
 
     fun encode(payload: ByteArray): ByteArray {
         val buffer = ByteBuffer.allocate(4 + payload.size).order(ByteOrder.LITTLE_ENDIAN)

@@ -180,19 +180,22 @@ class BleGattTransport(
             val gate = java.util.concurrent.CountDownLatch(1)
             val crowded = java.util.concurrent.atomic.AtomicBoolean(true)
             if (!handler.post {
-                    crowded.set(links.values.any { queuedBytes(it) >= MAX_QUEUED_BYTES })
+                    val ready = links.values.filter { it.hasAnyRole() }
+                    // Block only when every live link is full so one slow radio
+                    // cannot stall a file that the others can still carry.
+                    crowded.set(ready.isNotEmpty() && ready.all { queuedBytes(it) >= MAX_QUEUED_BYTES })
                     gate.countDown()
                 }
             ) return
             try {
-                if (!gate.await(1, java.util.concurrent.TimeUnit.SECONDS)) return
+                if (!gate.await(250, java.util.concurrent.TimeUnit.MILLISECONDS)) return
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return
             }
             if (!crowded.get()) return
             try {
-                Thread.sleep(20)
+                Thread.sleep(8)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return
@@ -219,18 +222,16 @@ class BleGattTransport(
             return
         }
         running = true
+        // Scan first so nearby phones show up without waiting on GATT service add.
+        startScanning()
         if (openServer()) {
             listener.onLog("BLE GATT server registered. Advertising starts after the service is added.")
             handler.postDelayed({
-                if (running && advertiseCallback == null) {
-                    startAdvertising()
-                    startScanning()
-                }
-            }, 1500)
+                if (running && advertiseCallback == null) startAdvertising()
+            }, 400)
         } else {
             listener.onLog("BLE GATT server could not start; scanning as central only.")
             startAdvertising()
-            startScanning()
         }
         handler.removeCallbacks(maintenance)
         handler.postDelayed(maintenance, MAINTENANCE_INTERVAL_MS)
@@ -290,14 +291,14 @@ class BleGattTransport(
     }
 
     @SuppressLint("MissingPermission")
-    private fun startAdvertising() {
+    private fun startAdvertising(txPower: Int = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH) {
         if (!hasAdvertisePermission()) return
         val leAdvertiser = adapter?.bluetoothLeAdvertiser ?: return
         advertiser = leAdvertiser
         advertiseCallback?.let { runCatching { leAdvertiser.stopAdvertising(it) } }
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setTxPowerLevel(txPower)
             .setConnectable(true)
             .setTimeout(0)
             .build()
@@ -316,6 +317,11 @@ class BleGattTransport(
 
             override fun onStartFailure(errorCode: Int) {
                 listener.onLog("BLE advertise failed: $errorCode")
+                if (txPower != AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM &&
+                    errorCode != AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED
+                ) {
+                    handler.post { startAdvertising(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM) }
+                }
             }
         }
         advertiseCallback = callback
@@ -331,10 +337,15 @@ class BleGattTransport(
         if (!hasScanPermission() || scanning) return
         val scanner = adapter?.bluetoothLeScanner ?: return
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MeshGattProtocol.SERVICE_UUID)).build()
-        val settings = ScanSettings.Builder()
+        val settingsBuilder = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .build()
+            .setReportDelay(0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            settingsBuilder.setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            settingsBuilder.setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+        }
+        val settings = settingsBuilder.build()
         val started = runCatching { scanner.startScan(listOf(filter), settings, scanCallback) }.isSuccess
         scanning = started
         if (started && announce) listener.onLog("BLE scanning for nearby mesh phones...")
@@ -365,6 +376,9 @@ class BleGattTransport(
         override fun onScanFailed(errorCode: Int) {
             scanning = false
             listener.onLog("BLE scan failed: $errorCode")
+            handler.postDelayed({
+                if (running) startScanning(announce = false)
+            }, 1_000)
         }
     }
 
@@ -447,10 +461,18 @@ class BleGattTransport(
         listener.onLog("BLE connecting to " + safeName(device))
         val callback = ClientCallback(address)
         clientCallbacks[address] = callback
-        val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            device.connectGatt(appContext, false, callback)
+        val gatt = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ->
+                device.connectGatt(
+                    appContext,
+                    false,
+                    callback,
+                    BluetoothDevice.TRANSPORT_LE,
+                    BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
+                )
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
+                device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
+            else -> device.connectGatt(appContext, false, callback)
         }
         if (gatt == null) {
             clientCallbacks.remove(address)
@@ -535,6 +557,7 @@ class BleGattTransport(
                     link.serverDevice = device
                     link.displayDevice = device
                     link.notifyEnabled = true
+                    drain(link)
                 }
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value)
@@ -560,7 +583,10 @@ class BleGattTransport(
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-            // Notifications are paced on the GATT worker.
+            handler.post {
+                val address = MeshPresence.normalizeAddress(device.address) ?: return@post
+                completeWrite(links[address] ?: return@post, status == BluetoothGatt.GATT_SUCCESS)
+            }
         }
     }
 
@@ -575,6 +601,7 @@ class BleGattTransport(
                     listener.onLog("BLE central linked " + safeName(gatt.device))
                     presence.onLinked(address, link.nodeId, System.currentTimeMillis())
                     publishPeers()
+                    boostLink(gatt)
                     // If the MTU request is refused its callback never fires, so
                     // discovery has to be kicked off here instead.
                     val requested = runCatching { gatt.requestMtu(MeshGattProtocol.REQUEST_MTU) }
@@ -606,11 +633,12 @@ class BleGattTransport(
             handler.post {
                 val link = links[address] ?: return@post
                 link.notifyEnabled = status == BluetoothGatt.GATT_SUCCESS
+                drain(link)
             }
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            handler.post { onClientWriteComplete(address, status) }
+            // WRITE_NO_RESPONSE already advanced the queue in drain().
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -699,33 +727,32 @@ class BleGattTransport(
         if (!written) {
             link.sending = false
             handler.removeCallbacks(link.writeTimeout)
-            handler.postDelayed({ drain(link) }, 200)
+            handler.postDelayed({ drain(link) }, 80)
             return
         }
-        if (!clientWrite) {
+        if (clientWrite) {
+            // WRITE_NO_RESPONSE is handed to the controller immediately. Pace
+            // just enough that a cheap radio is not flooded.
             link.queue.poll()
-            handler.postDelayed({
-                link.sending = false
-                drain(link)
-            }, 25)
+            link.sending = false
+            handler.postDelayed({ drain(link) }, writePaceMs(link))
             return
         }
         handler.removeCallbacks(link.writeTimeout)
         link.writeTimeout = Runnable {
             if (!link.sending) return@Runnable
-            link.sending = false
-            drain(link)
+            completeWrite(link, success = true)
         }
-        handler.postDelayed(link.writeTimeout, 3_000)
+        handler.postDelayed(link.writeTimeout, NOTIFY_CALLBACK_FALLBACK_MS)
     }
 
-    private fun onClientWriteComplete(address: String, status: Int) {
-        val link = links[address] ?: return
+    private fun writePaceMs(link: GattLink): Long =
+        if (link.mtu >= 64) 5L else 12L
+
+    private fun completeWrite(link: GattLink, success: Boolean) {
         handler.removeCallbacks(link.writeTimeout)
         if (!link.sending) return
-        if (status == BluetoothGatt.GATT_SUCCESS) {
-            link.queue.poll()
-        }
+        if (success) link.queue.poll()
         link.sending = false
         drain(link)
     }
@@ -734,16 +761,31 @@ class BleGattTransport(
     private fun writeClient(link: GattLink, chunk: ByteArray): Boolean {
         val gatt = link.gatt ?: return false
         val characteristic = link.remoteCharacteristic ?: return false
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val noResponse = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gatt.writeCharacteristic(
                 characteristic,
                 chunk,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             ) == BluetoothGatt.GATT_SUCCESS
         } else {
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             characteristic.value = chunk
             gatt.writeCharacteristic(characteristic)
+        }
+        return noResponse
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun boostLink(gatt: BluetoothGatt) {
+        runCatching { gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                gatt.setPreferredPhy(
+                    BluetoothDevice.PHY_LE_2M,
+                    BluetoothDevice.PHY_LE_2M,
+                    BluetoothDevice.PHY_OPTION_NO_PREFERRED
+                )
+            }
         }
     }
 
@@ -832,17 +874,18 @@ class BleGattTransport(
 
     private companion object {
         const val DEFAULT_NODE_ID = "NODE"
-        const val CONNECT_TIMEOUT_MS = 12_000L
-        const val CONNECT_RETRY_INTERVAL_MS = 8_000L
-        const val MAINTENANCE_INTERVAL_MS = 6_000L
-        const val SCAN_CYCLE_INTERVAL_MS = 24_000L
+        const val CONNECT_TIMEOUT_MS = 8_000L
+        const val CONNECT_RETRY_INTERVAL_MS = 2_500L
+        const val MAINTENANCE_INTERVAL_MS = 2_000L
+        const val SCAN_CYCLE_INTERVAL_MS = 20_000L
         const val COLLISION_LOG_INTERVAL_MS = 30_000L
 
         /** How long to respect the tie-break before dialling anyway. */
-        const val LINK_STALL_GRACE_MS = 15_000L
+        const val LINK_STALL_GRACE_MS = 3_500L
 
-        /** In-flight GATT payload per link. One FILE packet is ~1.5 KB. */
-        const val MAX_QUEUED_BYTES = 12 * 1024
+        /** In-flight GATT payload per link. One FILE packet is a few KB. */
+        const val MAX_QUEUED_BYTES = 48 * 1024
         const val SEND_WINDOW_TIMEOUT_MS = 30_000L
+        const val NOTIFY_CALLBACK_FALLBACK_MS = 16L
     }
 }

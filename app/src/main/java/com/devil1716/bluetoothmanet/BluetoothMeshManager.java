@@ -72,7 +72,7 @@ public class BluetoothMeshManager {
     private final java.util.Random retryJitter = new java.util.Random();
     private MeshLinkBridge extraLinks;
     private static final long SEEN_TTL_MS = 10 * 60 * 1000L;
-    private static final long PENDING_FLUSH_MIN_INTERVAL_MS = 8_000L;
+    private static final long PENDING_FLUSH_MIN_INTERVAL_MS = 2_000L;
     private static final long FILE_BUFFER_TTL_MS = 10 * 60 * 1000L;
     private static final int MAX_SEEN_FILE_CHUNKS = 4_096;
     private static final int MAX_OUTGOING_FILES = 3;
@@ -660,7 +660,7 @@ public class BluetoothMeshManager {
         });
         long now = System.currentTimeMillis();
         Long previous = helloSeen.put(node, now);
-        if (previous != null && now - previous < 8_000L) return;
+        if (previous != null && now - previous < 3_000L) return;
         if (message.getTtl() > 1) forwardMessage(message.decrementedTtl(), fromAddress);
     }
 
@@ -852,7 +852,7 @@ public class BluetoothMeshManager {
         if (buffer == null) return;
         if (buffer.retry != null) handler.removeCallbacks(buffer.retry);
         buffer.retry = () -> requestMissingChunks(transferId);
-        handler.postDelayed(buffer.retry, 2500);
+        handler.postDelayed(buffer.retry, 1_200);
     }
 
     private void requestMissingChunksForSource(String sourceNode) {
@@ -874,7 +874,7 @@ public class BluetoothMeshManager {
         listener.onLog("Requesting missing file chunks: " + missing);
         awaitSendWindow();
         forwardBytes(request.toBytes(), null);
-        handler.postDelayed(() -> requestMissingChunks(transferId), 4000);
+        handler.postDelayed(() -> requestMissingChunks(transferId), 2_000);
     }
 
     private void maybeRelayFile(FilePacket packet, String fromAddress) {

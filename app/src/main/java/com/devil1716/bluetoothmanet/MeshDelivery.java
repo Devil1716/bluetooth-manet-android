@@ -49,7 +49,7 @@ public final class MeshDelivery {
     /** Bounded exponential backoff for pending retries. Jitter is applied by the caller. */
     public static long retryDelayMs(int attempt) {
         int capped = Math.min(Math.max(attempt, 0), 7);
-        long delay = 8_000L * (1L << capped);
+        long delay = 2_000L * (1L << capped);
         long max = 15L * 60L * 1000L;
         return Math.min(delay, max);
     }

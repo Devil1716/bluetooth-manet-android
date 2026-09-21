@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets;
 public class FilePacket {
     public enum Kind { CHUNK, META, REQ }
 
-    public static final int CHUNK_SIZE = 600;
+    public static final int CHUNK_SIZE = 4096;
     public final Kind kind;
     public final String id, source, destination, fileName, data, digest, signature, requestIndexes;
     public final int ttl, index, total, size;

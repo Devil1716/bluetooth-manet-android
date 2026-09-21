@@ -51,8 +51,8 @@ public class MeshDeliveryTest {
 
     @Test
     public void pendingRetryBackoffIsBounded() {
-        assertEquals(8_000L, MeshDelivery.retryDelayMs(0));
-        assertEquals(16_000L, MeshDelivery.retryDelayMs(1));
-        assertEquals(15L * 60L * 1000L, MeshDelivery.retryDelayMs(20));
+        assertEquals(2_000L, MeshDelivery.retryDelayMs(0));
+        assertEquals(4_000L, MeshDelivery.retryDelayMs(1));
+        assertEquals(256_000L, MeshDelivery.retryDelayMs(20));
     }
 }

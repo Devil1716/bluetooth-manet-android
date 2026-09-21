@@ -35,6 +35,19 @@ public class FilePacketTest {
     }
 
     @Test
+    public void chunkSizeFitsInBlePayload() {
+        byte[] raw = new byte[FilePacket.CHUNK_SIZE];
+        String data = java.util.Base64.getEncoder().encodeToString(raw);
+        FilePacket packet = new FilePacket(FilePacket.Kind.CHUNK, "id", "A", "B", 7, "notes.bin",
+                0, 1, raw.length, "abc123", data, "sig");
+        assertTrue(
+                "A full file chunk must still fit in one length-prefixed BLE payload",
+                packet.toBytes().length < 24 * 1024
+        );
+        assertEquals(4096, FilePacket.CHUNK_SIZE);
+    }
+
+    @Test
     public void metaRoundTrip() {
         FilePacket meta = FilePacket.meta("id", "A", "B", 7, "a.bin", 3, 1200, "ffff", "sig");
         FilePacket parsed = FilePacket.fromWire(meta.toWire());

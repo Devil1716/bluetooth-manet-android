@@ -24,6 +24,7 @@ public final class FileReassembly implements Closeable {
     private RandomAccessFile raf;
     private int total;
     private int size;
+    private int stride = FilePacket.CHUNK_SIZE;
     private int receivedCount;
     private boolean metaOk;
 
@@ -34,10 +35,11 @@ public final class FileReassembly implements Closeable {
     public synchronized boolean setMeta(int total, int size) throws IOException {
         if (metaOk) return this.total == total && this.size == size;
         if (total <= 0 || size <= 0 || size > MeshIo.effectiveMaxFileBytes()) return false;
-        int expected = MeshIo.chunkCount(size, FilePacket.CHUNK_SIZE);
-        if (total != expected) return false;
+        int inferred = inferStride(size, total);
+        if (inferred <= 0 || inferred > FilePacket.CHUNK_SIZE) return false;
         this.total = total;
         this.size = size;
+        this.stride = inferred;
         this.metaOk = true;
         if (raf == null) {
             File parent = scratch.getParentFile();
@@ -66,7 +68,7 @@ public final class FileReassembly implements Closeable {
         int expected = expectedChunkLength(index);
         if (data.length != expected) return false;
         if (received.get(index)) return true;
-        raf.seek((long) index * FilePacket.CHUNK_SIZE);
+        raf.seek((long) index * stride);
         raf.write(data);
         received.set(index);
         receivedCount++;
@@ -139,9 +141,20 @@ public final class FileReassembly implements Closeable {
     }
 
     private int expectedChunkLength(int index) {
-        if (index < total - 1) return FilePacket.CHUNK_SIZE;
-        int rem = size - index * FilePacket.CHUNK_SIZE;
+        if (index < total - 1) return stride;
+        int rem = size - index * stride;
         return Math.max(0, rem);
+    }
+
+    static int inferStride(int size, int total) {
+        if (total <= 0 || size <= 0) return -1;
+        if (MeshIo.chunkCount(size, FilePacket.CHUNK_SIZE) == total) return FilePacket.CHUNK_SIZE;
+        if (MeshIo.chunkCount(size, 600) == total) return 600;
+        int guess = (size + total - 1) / total;
+        if (guess > 0 && guess <= FilePacket.CHUNK_SIZE && MeshIo.chunkCount(size, guess) == total) {
+            return guess;
+        }
+        return -1;
     }
 
     private void closeQuietly() {
